@@ -1,0 +1,59 @@
+import { expect, test } from '@playwright/test';
+import { openGuest, openRoom } from './helpers';
+
+/**
+ * The guest's screen before there is a video on it.
+ *
+ * A guest has no picker and no controls, so until the host sends a stream this
+ * screen IS the app for them. All three waits below used to render as one line
+ * of grey text, and two of them were dead ends.
+ */
+
+test('a guest whose room has no host is told so, and given a way out', async ({ page }) => {
+	// Nobody is hosting this. Rendezvous walks its whole ladder before saying
+	// so, which is where the 20s-per-strategy budget goes.
+	await page.goto('/room/K7M4PQ');
+
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'searching');
+
+	await expect(waiting).toHaveAttribute('data-phase', 'failed', { timeout: 60_000 });
+	await expect(page.getByTestId('waiting-title')).toContainText('No one is hosting');
+
+	// The whole of the old failure state was the raw relay diagnostic, with no
+	// control on the page: editing the URL was the only way on.
+	await expect(page.getByTestId('retry')).toBeVisible();
+	await page.getByTestId('go-home').click();
+	await expect(page).toHaveURL(/\/$/);
+});
+
+test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
+	await page.goto('/room/K7M4PQ');
+	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'failed', {
+		timeout: 60_000
+	});
+
+	// Worth keeping for a bug report; worth hiding from someone who wants to
+	// watch a film. It must be the per-strategy detail, not a restatement.
+	await expect(page.getByText('Connection details')).toBeVisible();
+	await page.getByText('Connection details').click();
+	await expect(page.getByTestId('waiting-room')).toContainText(/no host answered within \d+ms/);
+});
+
+test('a guest who arrives before the host picks a file knows it is connected', async ({
+	page,
+	context
+}) => {
+	// Stops at the picker: the room is announced and the host is reachable, but
+	// there is no video yet.
+	const { code } = await openRoom(page);
+	const { page: guest } = await openGuest(context, code);
+
+	// Regression: this said 'Looking for the host...' -- while sitting connected
+	// to it -- for as long as the host took to choose, telling a guest who had
+	// done everything right that their code was probably wrong.
+	const waiting = guest.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'found', { timeout: 45_000 });
+	await expect(waiting).toContainText('Connected to Host');
+	await expect(guest.getByTestId('waiting-title')).toHaveText("You're in");
+});

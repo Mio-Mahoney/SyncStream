@@ -36,6 +36,15 @@ export type GuestRoomOptions = {
 	name: string;
 	preferred?: StrategyName;
 	onReady: (duration: number) => void;
+	/**
+	 * The host has identified itself over the control channel. Rendezvous
+	 * resolving only means *a* peer appeared, which under Phase 5 may be another
+	 * guest, so this is the first moment the room is confirmed to exist. The gap
+	 * between here and `onReady` is the host choosing a file, and it is
+	 * unbounded - without this the guest cannot be told apart from one still
+	 * searching, and reads "looking for the host" while sitting next to it.
+	 */
+	onHostFound: (name: string) => void;
 	onUnplayable: (reason: string) => void;
 	onWaiting: (on: string[]) => void;
 	onError: (err: Error) => void;
@@ -194,6 +203,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 					hostLink = link;
 					stats.candidateType = link.candidateType;
 					mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
+					opts.onHostFound(msg.name);
 				}
 				break;
 

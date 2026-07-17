@@ -6,11 +6,12 @@
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
 	import FilePicker from '$lib/FilePicker.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
+	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
 	import { tierMessage } from '$lib/media/probe';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
 	import { startGuestRoom, type GuestRoom } from '$lib/room/guest';
-	import { strategyFromParams } from '$lib/rendezvous/room';
+	import { RendezvousError, strategyFromParams } from '$lib/rendezvous/room';
 	import { isValidRoomCode } from '$lib/rendezvous/codes';
 
 	// Reactive because the control bar takes it as a prop: bind:this only assigns
@@ -50,6 +51,11 @@
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	let ready = $state(false);
 	let copied = $state(false);
+	/** Set once the host says hello. Empty means we are still searching. */
+	let hostName = $state('');
+	/** A guest's join that walked the whole ladder and found no host. */
+	let joinFailure = $state<RendezvousError | null>(null);
+	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
 	let reading = $state(false);
 	let barrierEnabled = $state(true);
@@ -64,6 +70,23 @@
 
 	const name = `Guest ${Math.floor(Math.random() * 900 + 100)}`;
 
+	/**
+	 * Which wait a guest is in, or null when there is nothing to wait for. A
+	 * guest has no picker and no controls until the host sends a video, so
+	 * without this the whole page is one line of grey text.
+	 */
+	function phaseFor(): Phase | null {
+		// The host's own waits are the picker's to describe, and a hard error
+		// already has a banner that says more than a phase name could.
+		if (isHost || error) return null;
+		if (joinFailure) return 'failed';
+		// Outranks `ready`, since the host can also leave mid-film.
+		if (roomOver) return 'ended';
+		if (ready) return null;
+		return hostName ? 'found' : 'searching';
+	}
+	const guestPhase = $derived(phaseFor());
+
 	onMount(() => {
 		debug = isDebug();
 		exposeTestOracle();
@@ -76,8 +99,13 @@
 
 		const ac = new AbortController();
 		(isHost ? asHost(ac.signal) : asGuest(ac.signal)).catch((e: Error) => {
-			error = e.message;
 			status = '';
+			// "room X was not reachable on any strategy tried (nostr: no host
+			// answered within 9813ms; ...)" is a true sentence that tells a guest
+			// nothing they can act on. The waiting room says what it means and
+			// offers a way out; the relay log survives behind a disclosure.
+			if (!isHost && e instanceof RendezvousError) joinFailure = e;
+			else error = e.message;
 		});
 
 		return () => {
@@ -125,7 +153,9 @@
 	}
 
 	async function asGuest(signal: AbortSignal) {
-		status = 'Looking for the host...';
+		// The waiting room speaks for the guest now; a second line of status text
+		// underneath it would only ever repeat or contradict it.
+		status = '';
 		guest = await startGuestRoom({
 			video,
 			code,
@@ -135,8 +165,8 @@
 			onReady: (d) => {
 				duration = d;
 				ready = true;
-				status = '';
 			},
+			onHostFound: (n) => (hostName = n),
 			onUnplayable: (reason) => (unplayable = reason),
 			onWaiting: (on) => {
 				waitingOn = on;
@@ -145,7 +175,7 @@
 			onError: (e) => (error = e.message),
 			onHostGone: () => {
 				// PLAN.md Phase 1: the room exists while the host is connected.
-				status = 'The host left, so the room is over.';
+				roomOver = true;
 				ready = false;
 			}
 		});
@@ -212,6 +242,16 @@
 		setTimeout(() => (copied = false), 1500);
 	}
 
+	/**
+	 * A reload rather than re-running `asGuest`: the failed join left a
+	 * half-built network behind it, and starting clean is both simpler and more
+	 * likely to work than reusing it. Safe here in a way it is not for a host,
+	 * whose reload ends the room.
+	 */
+	function retryJoin() {
+		location.reload();
+	}
+
 	function toggleBarrier() {
 		barrierEnabled = !barrierEnabled;
 		host?.barrier.setEnabled(barrierEnabled);
@@ -273,6 +313,16 @@
 	-->
 	{#if isHost && opened && !ready}
 		<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
+	{/if}
+
+	{#if guestPhase}
+		<WaitingRoom
+			phase={guestPhase}
+			code={shownCode}
+			{hostName}
+			attempts={joinFailure?.attempts ?? []}
+			onRetry={retryJoin}
+		/>
 	{/if}
 
 	<div class="w-full max-w-5xl" class:hidden={!ready}>
