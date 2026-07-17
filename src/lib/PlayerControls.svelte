@@ -129,10 +129,21 @@
 	onfullscreenchange={() => (fullscreen = !!document.fullscreenElement)}
 />
 
-<div class="flex items-center gap-3 bg-vanilla-200 px-3 py-2">
+<!--
+	One row where there is room for one, two where there is not. The bar's fixed
+	parts (play, both timestamps, mute, volume, fullscreen) need ~454px before the
+	seek gets a pixel, so on a phone they used to run straight off the end of a
+	player that is `overflow-hidden` - not scrolled off, gone. Fullscreen went
+	first, which on a phone is the one control worth having.
+
+	`order` rather than two blocks of markup: the seek sits *between* the fixed
+	parts when it is inline, and above all of them when it is not, so there is no
+	way to slice the row into groups that read correctly at both sizes.
+-->
+<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 bg-vanilla-200 px-3 py-2">
 	<button
 		onclick={onToggle}
-		class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-tangerine-500 text-moonstone-900 transition hover:bg-tangerine-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-moonstone-500"
+		class="order-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-tangerine-500 text-moonstone-900 transition hover:bg-tangerine-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-moonstone-500 sm:order-1"
 		title={playing ? 'Pause (space)' : 'Play (space)'}
 		aria-label={playing ? 'Pause' : 'Play'}
 		data-testid="play"
@@ -149,10 +160,24 @@
 		{/if}
 	</button>
 
-	<span class="shrink-0 font-mono text-sm tabular-nums text-moonstone-900" data-testid="elapsed">
+	<span
+		class="order-3 shrink-0 font-mono text-sm tabular-nums text-moonstone-900 sm:order-2"
+		data-testid="elapsed"
+	>
 		{elapsed}
 	</span>
 
+	<!-- Only once the two timestamps are neighbours does the pair need reading as one. -->
+	<span class="order-3 -mx-1.5 text-sm text-moonstone-800 sm:hidden" aria-hidden="true">/</span>
+
+	<!--
+		`basis-full` and not `w-full`: a flex child at 100% width still shrinks to
+		share a line with its siblings, while a 100% basis overflows the line it is
+		offered and so is given one of its own. `min-w-0` is what lets it shrink on
+		the wide layout at all - a range input's ~129px intrinsic width is a floor
+		that flex-1 alone will not go under, and that floor is what pushed the rest
+		of the bar off the end rather than squeezing this.
+	-->
 	<input
 		type="range"
 		min="0"
@@ -163,16 +188,24 @@
 		onchange={commitSeek}
 		disabled={!duration}
 		style="--progress: {progress}%"
-		class="seek h-1.5 flex-1 cursor-pointer disabled:cursor-default disabled:opacity-50"
+		class="seek order-1 h-1.5 basis-full cursor-pointer disabled:cursor-default disabled:opacity-50 sm:order-3 sm:min-w-0 sm:flex-1 sm:basis-0"
 		aria-label="Seek"
 		data-testid="seek"
 	/>
 
-	<span class="shrink-0 font-mono text-sm tabular-nums text-moonstone-800" data-testid="duration">
+	<span
+		class="order-4 shrink-0 font-mono text-sm tabular-nums text-moonstone-800"
+		data-testid="duration"
+	>
 		{total}
 	</span>
 
-	<div class="flex shrink-0 items-center gap-1.5">
+	<!--
+		`ml-auto` only while wrapped: on the two-row layout this group and
+		fullscreen sit at the far end of the button row, away from the timestamps.
+		Inline there is no slack to distribute, so it does nothing either way.
+	-->
+	<div class="order-5 ml-auto flex shrink-0 items-center gap-1.5 sm:ml-0">
 		<button
 			onclick={toggleMute}
 			class="flex h-8 w-8 items-center justify-center rounded text-moonstone-900 transition hover:bg-vanilla-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-moonstone-500"
@@ -203,6 +236,14 @@
 				{/if}
 			</svg>
 		</button>
+		<!--
+			Withheld on the narrow layout, and the first thing to go rather than the
+			last: 80px of slider is the difference between fullscreen fitting and not,
+			and it is the least of the bar. A phone has hardware volume keys, and on
+			iOS `video.volume` is read-only outright - the slider would move and
+			nothing would happen. Mute stays, because that is the one thing the
+			hardware keys do not do, and the `m` shortcut still reaches it.
+		-->
 		<input
 			type="range"
 			min="0"
@@ -211,7 +252,7 @@
 			value={muted ? 0 : volume}
 			oninput={onVolumeInput}
 			style="--progress: {(muted ? 0 : volume) * 100}%"
-			class="seek h-1.5 w-20 cursor-pointer"
+			class="seek hidden h-1.5 w-20 cursor-pointer sm:block"
 			aria-label="Volume"
 			data-testid="volume"
 		/>
@@ -219,7 +260,7 @@
 
 	<button
 		onclick={toggleFullscreen}
-		class="flex h-8 w-8 shrink-0 items-center justify-center rounded text-moonstone-900 transition hover:bg-vanilla-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-moonstone-500"
+		class="order-6 flex h-8 w-8 shrink-0 items-center justify-center rounded text-moonstone-900 transition hover:bg-vanilla-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-moonstone-500"
 		title={fullscreen ? 'Exit fullscreen (f)' : 'Fullscreen (f)'}
 		aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
 		data-testid="fullscreen"

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
 
 /**
@@ -247,4 +247,53 @@ test('keyboard shortcuts drive playback', async ({ page }) => {
 
 	await page.keyboard.press('m');
 	expect(await page.evaluate(() => document.querySelector('video')!.muted)).toBe(true);
+});
+
+/** How far the control bar runs past its own box. Anything over 0 is off the end. */
+const barOverflow = (page: Page) =>
+	page.evaluate(() => {
+		const bar = document.querySelector('[data-testid="seek"]')!.parentElement!;
+		return bar.scrollWidth - bar.clientWidth;
+	});
+
+const controlWidth = (page: Page, testid: string) =>
+	page.evaluate(
+		(id) =>
+			Math.round(document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().width),
+		testid
+	);
+
+/**
+ * Regression: the bar was a single unwrapping row whose fixed parts needed
+ * ~454px before the seek got a pixel, and the seek could not shrink under a
+ * range input's ~129px intrinsic width. On a 390px phone that put the volume
+ * slider and the fullscreen button past the right edge of a player that is
+ * `overflow-hidden` -- so they were not scrolled off, they were gone, and
+ * fullscreen is the one control on a phone worth having.
+ */
+test('every player control is reachable on a phone', async ({ page }) => {
+	await page.setViewportSize({ width: 390, height: 844 });
+	await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible({ timeout: 45_000 });
+
+	expect(await barOverflow(page)).toBe(0);
+	for (const control of ['play', 'seek', 'elapsed', 'duration', 'mute', 'fullscreen']) {
+		await expect(page.getByTestId(control)).toBeInViewport();
+	}
+
+	// Fitting by squeezing the seek to a sliver would pass the checks above and
+	// still leave the film unscrubbable. On its own row it gets the full width.
+	expect(await controlWidth(page, 'seek')).toBeGreaterThan(250);
+
+	// The volume slider is what stands down to make that room: a phone has
+	// hardware keys, and iOS ignores `video.volume` outright. Mute does not,
+	// because the hardware keys have no equivalent.
+	await expect(page.getByTestId('volume')).toBeHidden();
+	await expect(page.getByTestId('mute')).toBeVisible();
+
+	// The wide layout is the one that already worked, and it keeps everything.
+	await page.setViewportSize({ width: 1280, height: 800 });
+	expect(await barOverflow(page)).toBe(0);
+	await expect(page.getByTestId('volume')).toBeVisible();
+	await expect(page.getByTestId('fullscreen')).toBeInViewport();
 });
