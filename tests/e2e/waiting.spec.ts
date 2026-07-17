@@ -109,29 +109,48 @@ test('a host waiting for their room to open is told so, and shown no code yet', 
 	// every frame of the wait rather than whichever ones a check happens to land
 	// on -- the old bug showed the code from the very first render.
 	await page.addInitScript(() => {
-		(window as unknown as { __codeBeforeRoom: string[] }).__codeBeforeRoom = [];
+		const w = window as unknown as { __codeBeforeRoom: string[]; __opening: string[] };
+		w.__codeBeforeRoom = [];
+		w.__opening = [];
 		setInterval(() => {
 			const code = document.querySelector('[data-testid=room-code]')?.textContent?.trim();
 			const open = document.querySelector('[data-testid=file-input]');
-			if (code && !open)
-				(window as unknown as { __codeBeforeRoom: string[] }).__codeBeforeRoom.push(code);
+			if (code && !open) w.__codeBeforeRoom.push(code);
+			// The opening screen is recorded from in here for the same reason the
+			// code is: it ends when the relay answers, so a check from the test side
+			// is racing it, and on a quick relay it could only ever prove the room
+			// opened slowly enough to be caught at it. What it said while it was up
+			// is the actual claim, and this is the only place that can still see it.
+			const waiting = document.querySelector('[data-testid=waiting-room]');
+			if (waiting?.getAttribute('data-phase') !== 'opening') return;
+			w.__opening.push(
+				JSON.stringify({ spinner: !!waiting.querySelector('[role=status]'), title: document.title })
+			);
 		}, 20);
 	});
 	await page.goto('/');
 	await page.getByText('Create room').click();
 
-	// A relay round trip plus the occupancy probe: seconds, not a frame. The
-	// whole of it used to be 'Opening the room...' in grey, with no spinner --
-	// the one thing telling 'working on it' apart from 'hung'.
-	const waiting = page.getByTestId('waiting-room');
-	await expect(waiting).toHaveAttribute('data-phase', 'opening');
-	await expect(waiting.getByRole('status')).toBeVisible();
-	await expect(page).toHaveTitle(/Opening your room/);
-
 	// Then the room is real, and so is the code.
 	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
 	await expect(page.getByTestId('room-code')).toBeVisible();
-	await expect(waiting).toHaveCount(0);
+	await expect(page.getByTestId('waiting-room')).toHaveCount(0);
+
+	// A relay round trip plus the occupancy probe: seconds, not a frame. The
+	// whole of it used to be 'Opening the room...' in grey, with no spinner --
+	// the one thing telling 'working on it' apart from 'hung'.
+	const opening = (
+		await page.evaluate(() => (window as unknown as { __opening: string[] }).__opening)
+	).map((f) => JSON.parse(f) as { spinner: boolean; title: string });
+	expect(opening.length, 'the room must have been caught opening at all').toBeGreaterThan(0);
+	expect(
+		opening.filter((f) => !f.spinner),
+		'the wait says it is working, every frame it is up'
+	).toEqual([]);
+	expect(
+		[...new Set(opening.map((f) => f.title))].every((t) => /Opening your room/.test(t)),
+		'and the tab says so too'
+	).toBe(true);
 
 	// We draw the code ourselves and only learn whether it is free by announcing
 	// it and seeing whether a rival host answers, so before that it is a guess --

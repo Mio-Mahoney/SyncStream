@@ -10,6 +10,12 @@
 		video: HTMLVideoElement;
 		/** Fullscreened instead of the bare <video>, so these controls survive it. */
 		container: HTMLElement | undefined;
+		/**
+		 * Whether the film is on screen. This component stays mounted when it is
+		 * not - the page only hides the block, because unmounting would take the
+		 * <video> with it - so the window-wide shortcuts below need telling.
+		 */
+		ready: boolean;
 		playing: boolean;
 		currentTime: number;
 		duration: number;
@@ -17,7 +23,8 @@
 		onSeek: (seconds: number) => void;
 	}
 
-	let { video, container, playing, currentTime, duration, onToggle, onSeek }: Props = $props();
+	let { video, container, ready, playing, currentTime, duration, onToggle, onSeek }: Props =
+		$props();
 
 	const SKIP = 5;
 
@@ -161,11 +168,23 @@
 	}
 
 	/**
+	 * A control the browser itself works with a key we also listen for. The
+	 * target is normally the icon inside the control rather than the control, so
+	 * this walks up instead of reading the tag.
+	 */
+	const activatable = (el: HTMLElement | null) =>
+		!!el?.closest?.('button, summary, a[href], [role="button"]');
+
+	/**
 	 * Shortcuts are a window listener rather than a handler on the bar, since the
 	 * thing a viewer is looking at (and clicking) is the video, not the button.
 	 * Typing a room code somewhere else must never scrub the film.
 	 */
 	function onKey(e: KeyboardEvent) {
+		// Nothing to drive and no bar to wake until the film is on screen: the
+		// component outlives the picture it belongs to, so without this the room's
+		// shortcuts are live over the waiting room and the picker.
+		if (!ready) return;
 		// Before the guards: a keystroke is activity whether or not it is one of
 		// ours, and a shortcut that acted on a bar nobody can see would be worse
 		// than the bar.
@@ -177,6 +196,14 @@
 		switch (e.key) {
 			case ' ':
 			case 'k':
+				// Space belongs to whatever is focused: it is how the browser works
+				// a button, and cancelling the keydown suppresses the click it would
+				// otherwise raise. Taking it meant a host tabbing to "Change video"
+				// and pressing Space paused the film for the whole room and never
+				// opened the picker. Only Space - a focused button does nothing with
+				// the arrows, so seeking past one is still the viewer's intent, and
+				// `k` stays the shortcut that never has to ask.
+				if (e.key === ' ' && activatable(el)) return;
 				e.preventDefault();
 				onToggle();
 				break;

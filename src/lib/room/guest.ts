@@ -247,6 +247,17 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	const startPlayback = async (mpd: string, duration: number, title: string) => {
 		if (loadedMpd === mpd) return;
 		await stopPlayback();
+
+		// `stopPlayback` rebuilds the mesh around the host, and leaves it null when
+		// there is no longer a host to build it around - it tears the old player
+		// down first, and a host who closes their tab during a film change is gone
+		// by the time it reads the link. There is no film to start without one, and
+		// asserting the mesh here instead threw a TypeError out through
+		// `queuePlayback`'s catch into `onError`, which outranks `roomOver` on the
+		// page: the guest lost the screen that says the party is over, and the way
+		// home on it, and read a raw JS error in its place. Leaving is not an error.
+		if (!mesh) return;
+
 		loadedMpd = mpd;
 		markTtffStart();
 
@@ -262,7 +273,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		// PLAN.md 4.2: the scheme handler is a URI parser and a promise. Under
 		// Phase 5 the promise happens to prefer a peer, which Shaka neither
 		// knows nor cares about.
-		registerSyncStreamScheme(mesh!.fetch);
+		registerSyncStreamScheme(mesh.fetch);
 
 		// ChannelStats.throughputBps is BYTES/sec; Shaka's
 		// abr.defaultBandwidthEstimate is BITS/sec. Seeding it with the wrong

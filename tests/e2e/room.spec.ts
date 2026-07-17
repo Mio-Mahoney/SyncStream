@@ -342,6 +342,50 @@ test('keyboard shortcuts drive playback', async ({ page }) => {
 	expect(await page.evaluate(() => document.querySelector('video')!.muted)).toBe(true);
 });
 
+/**
+ * The other half of the shortcuts: what they must NOT reach. Space is how a
+ * keyboard works a button, so a room that takes Space for playback takes it
+ * from every control in the room - the click never happens and the film moves
+ * instead. Enter hides this in the tests above, which press keys with nothing
+ * focused; a keyboard viewer has something focused by definition.
+ */
+test('space works the control under the keyboard, not the film behind it', async ({ page }) => {
+	await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible({ timeout: 45_000 });
+	const paused = () => page.evaluate(() => document.querySelector('video')!.paused);
+
+	// "Change video" is the plainest case: a control whose whole job is to open
+	// something, sitting next to a film it must not touch.
+	await page.getByTestId('change-video').focus();
+	await page.keyboard.press(' ');
+	await expect(
+		page.getByTestId('file-input'),
+		'space on a focused button must work the button'
+	).toBeVisible();
+	expect(await paused(), 'and must not reach the film behind it').toBe(true);
+
+	// Mute, because it is on the bar itself: the shortcut and the control are
+	// inches apart and the wrong one firing is the same class of bug.
+	await page.getByTestId('mute').focus();
+	await page.keyboard.press(' ');
+	expect(await page.evaluate(() => document.querySelector('video')!.muted)).toBe(true);
+	expect(await paused(), 'space on mute is not a play button').toBe(true);
+
+	// The arrows are not the browser's to take, so a focused button keeps them:
+	// clicking play leaves it focused, and seeking from there is still a seek.
+	await page.getByTestId('play').click();
+	await until(paused, (p) => !p, { what: 'the film to start' });
+	const before = await videoTime(page);
+	await page.keyboard.press('ArrowRight');
+	await until(
+		() => videoTime(page),
+		(t) => t >= before + 4,
+		{
+			what: 'ArrowRight to seek with the play button still focused'
+		}
+	);
+});
+
 /** How far the control bar runs past its own box. Anything over 0 is off the end. */
 const barOverflow = (page: Page) =>
 	page.evaluate(() => {
@@ -618,7 +662,12 @@ test('the controls get out of the way of a film watched fullscreen', async ({ pa
 
 	// A paused film keeps them. Hiding the only thing that says how to resume,
 	// on a screen that has nothing else on it, would be a dead end.
+	//
+	// Off the bar before the wait: clicking play parks the pointer on it, and a
+	// hovered bar cannot hide whatever `playing` says - so the assertion would
+	// hold with the pause condition deleted and prove nothing.
 	await page.getByTestId('play').click();
+	await page.mouse.move(600, 300);
 	await page.waitForTimeout(4000);
 	expect(await bar(), 'a paused fullscreen film must keep its controls').toMatchObject({
 		opacity: '1',

@@ -36,6 +36,23 @@ export function normalizeName(raw: string): string {
 }
 
 /**
+ * A name that arrived over the wire, which is to say a name nobody has checked:
+ * `decodeControl` types a control message without validating it, the same gap
+ * mesh's `handleHave` guards for segment keys. `normalizeName` above bounds a
+ * name at the page that chose it - the one page with no reason to abuse it.
+ *
+ * The host is what states these names to the rest of the room, so an unbounded
+ * one is not the sender's problem: it is everyone's presence line, roster and
+ * barrier banner. `fallback` covers the name that is not a string at all, and
+ * the one that normalises away to nothing, because every screen that renders a
+ * name assumes it has one.
+ */
+export function remoteName(raw: unknown, fallback: string): string {
+	if (typeof raw !== 'string') return fallback;
+	return normalizeName(raw) || fallback;
+}
+
+/**
  * localStorage is not always there to read: it throws outright in some
  * privacy modes rather than returning null. A forgotten name is a fallback
  * name, which is exactly where this app has been all along, so there is nothing

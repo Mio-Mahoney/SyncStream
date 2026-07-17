@@ -180,7 +180,16 @@ test('picking a file is reported once, at the picker it was handed to', async ({
 				.map((el) => el.textContent?.trim() ?? '')
 				.filter((t) => /reading|loading/i.test(t));
 			w.__frames!.push(
-				JSON.stringify({ top: Math.round(picker.getBoundingClientRect().top), elsewhere })
+				JSON.stringify({
+					top: Math.round(picker.getBoundingClientRect().top),
+					elsewhere,
+					// What the picker said about itself this frame. Recorded rather
+					// than polled from the test: it exists only while the file is being
+					// read, so asking for it afterwards is a race against the probe and
+					// asking for it from outside can only ever catch the frame it lands
+					// on. The history answers both.
+					chosen: document.querySelector('[data-testid="chosen-file"]')?.textContent ?? null
+				})
 			);
 		};
 		requestAnimationFrame(tick);
@@ -191,9 +200,6 @@ test('picking a file is reported once, at the picker it was handed to', async ({
 
 	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
 
-	// The picker speaks for itself while it reads: a spinner, and the name of the
-	// file it was just handed.
-	await expect(page.getByTestId('chosen-file')).toHaveText('tiny-60s.mp4');
 	await until(
 		() => page.getByTestId('video').isVisible(),
 		(v) => v,
@@ -202,8 +208,23 @@ test('picking a file is reported once, at the picker it was handed to', async ({
 
 	const frames = (
 		await page.evaluate(() => (window as unknown as { __frames: string[] }).__frames)
-	).map((f) => JSON.parse(f) as { top: number; elsewhere: string[] });
-	expect(frames.length, 'frames sampled while the picker was up').toBeGreaterThan(3);
+	).map((f) => JSON.parse(f) as { top: number; elsewhere: string[]; chosen: string | null });
+
+	// The precondition for everything below, and the honest version of a frame
+	// count: the two claims after this are both about what the screen did while
+	// the file was being read, so they mean nothing unless a frame caught it
+	// being read. A threshold on how many frames a probe happens to fit in was
+	// only ever standing in for this, and asked for four when the answer was
+	// three.
+	const reading = frames.filter((f) => f.chosen !== null);
+	expect(reading.length, 'the picker must have been caught reading at all').toBeGreaterThan(0);
+
+	// The picker speaks for itself while it reads: a spinner, and the name of the
+	// file it was just handed.
+	expect(
+		[...new Set(reading.map((f) => f.chosen))],
+		'the picker names the file it was handed, the whole time it holds it'
+	).toEqual(['tiny-60s.mp4']);
 
 	// Nothing outside the picker narrates the read. The page used to print
 	// "Reading the file..." at the top while the picker showed a spinner and the

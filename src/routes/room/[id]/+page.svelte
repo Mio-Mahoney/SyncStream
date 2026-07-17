@@ -665,6 +665,7 @@
 			<PlayerControls
 				{video}
 				container={player}
+				{ready}
 				{playing}
 				{currentTime}
 				{duration}

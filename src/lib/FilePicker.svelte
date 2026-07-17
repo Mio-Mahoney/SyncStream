@@ -50,11 +50,18 @@
 	}
 
 	function onDragOver(e: DragEvent) {
-		if (busy || !carriesFile(e.dataTransfer)) return;
+		if (!carriesFile(e.dataTransfer)) return;
 		// Without this the browser navigates away to the file instead of letting
 		// the page have it, which loses the room.
+		//
+		// So it happens whether or not we want the file. Bowing out while busy by
+		// returning early was the same thing as refusing the drop, and refusing a
+		// drop is what hands it back to the browser: a host who dropped a second
+		// film while the first was still being read left the room, and took every
+		// guest with them. Refusing it is `onDrop`'s job, which can refuse it
+		// without also surrendering it. The cursor says so in the meantime.
 		e.preventDefault();
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+		if (e.dataTransfer) e.dataTransfer.dropEffect = busy ? 'none' : 'copy';
 	}
 
 	function onDragLeave(e: DragEvent) {

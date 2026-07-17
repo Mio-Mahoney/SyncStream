@@ -8,6 +8,7 @@
  */
 
 import { filmTitle } from '$lib/film';
+import { fallbackName, remoteName } from '$lib/identity';
 import { createOrigin } from '$lib/media/origin';
 import { probeFile, tierMessage } from '$lib/media/probe';
 import type { Origin, ProbeResult } from '$lib/media/types';
@@ -139,14 +140,16 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	 * one explanation for why their film froze reads as news about a stranger.
 	 * Each guest is told about the others by name, and about itself as "you".
 	 */
+	const sendWaiting = (link: PeerLink, blocked: readonly BlockedPeer[]) => {
+		link.channels.sendControl({
+			t: 'waiting',
+			on: blocked.filter((b) => b.peerId !== link.peerId).map((b) => b.name),
+			you: blocked.some((b) => b.peerId === link.peerId)
+		});
+	};
+
 	const announceWaiting = (blocked: readonly BlockedPeer[]) => {
-		for (const link of net.links()) {
-			link.channels.sendControl({
-				t: 'waiting',
-				on: blocked.filter((b) => b.peerId !== link.peerId).map((b) => b.name),
-				you: blocked.some((b) => b.peerId === link.peerId)
-			});
-		}
+		for (const link of net.links()) sendWaiting(link, blocked);
 		// The host is not a guest, so nothing here is ever about them.
 		opts.onWaiting(blocked.map((b) => b.name));
 	};
@@ -262,6 +265,13 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			by: pauserName(),
 			you: pausedBy !== null && pausedBy.peerId === link.peerId
 		});
+		// And the other reason a film sits still. The barrier only ever speaks on
+		// a transition, and an arrival is not one: it re-fires when the blocked
+		// list changes, and a healthy guest joining does not change who is behind.
+		// Without this a guest walking into a stalled room reads nothing at all -
+		// the one screen with no account of a frozen film is the newest one, which
+		// has the least idea why.
+		sendWaiting(link, barrier.waitingOn);
 	};
 
 	const serveSegment = async (link: PeerLink, msg: Extract<ControlMessage, { t: 'segReq' }>) => {
@@ -279,24 +289,44 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		}
 	};
 
+	/**
+	 * Every name a guest tells us about itself, through one gate, because all
+	 * three ways it can arrive land somewhere the whole room reads. `remoteName`
+	 * says why the wire cannot be taken at its word; the fallback here is what
+	 * makes rejecting a name safe - the guest keeps the name they already had,
+	 * and a guest whose very first word is junk still gets one.
+	 */
+	const nameFrom = (peerId: string, raw: unknown): string =>
+		remoteName(raw, guestNames.get(peerId) ?? fallbackName('guest'));
+
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
 		switch (msg.t) {
-			case 'hello':
-				guestNames.set(link.peerId, msg.name);
-				updatePeer(link.peerId, { name: msg.name, role: msg.role });
+			case 'hello': {
+				const guestName = nameFrom(link.peerId, msg.name);
+				guestNames.set(link.peerId, guestName);
+				updatePeer(link.peerId, { name: guestName, role: msg.role });
 				announceGuests();
 				sendReady(link);
 				break;
+			}
 
 			// A guest has said who it is, replacing the fallback it arrived under.
 			// Every name in the room is ours to hold and ours to state, so this
 			// lands in the same place its hello did and re-states the roster from
 			// there - which is what carries the new name to the other guests.
-			case 'rename':
-				guestNames.set(link.peerId, msg.name);
-				updatePeer(link.peerId, { name: msg.name });
+			case 'rename': {
+				const guestName = nameFrom(link.peerId, msg.name);
+				guestNames.set(link.peerId, guestName);
+				updatePeer(link.peerId, { name: guestName });
+				// The pause box holds a name as well as an id, and it is the name
+				// that outlives the peer: `pauserName` falls back to it the moment
+				// they leave. Renaming without refreshing it here is what leaves the
+				// room announcing a pause under a name its subject never used - the
+				// exact staleness the id is carried to prevent.
+				if (pausedBy?.peerId === link.peerId) pausedBy.name = guestName;
 				announceGuests();
 				break;
+			}
 
 			case 'segReq':
 				void serveSegment(link, msg);
@@ -317,15 +347,20 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				applyIntentFrom(link.peerId, msg);
 				break;
 
-			case 'status':
-				guestNames.set(link.peerId, msg.name);
+			case 'status': {
+				// Through the same gate as the other two: this name reaches the
+				// barrier, and "Waiting for X to catch up" is the one sentence in the
+				// room that a stalled guest's own status message gets to write.
+				const guestName = nameFrom(link.peerId, msg.name);
+				guestNames.set(link.peerId, guestName);
 				updatePeer(link.peerId, {
 					bufferedAhead: msg.bufferedAhead,
 					rung: msg.rung,
 					throughputBps: msg.throughput
 				});
-				barrier.report(link.peerId, msg.name, msg.bufferedAhead);
+				barrier.report(link.peerId, guestName, msg.bufferedAhead);
 				break;
+			}
 
 			case 'have':
 				mesh.handleHave(link.peerId, msg.keys);
