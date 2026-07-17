@@ -4,5 +4,5 @@
 @tailwind utilities;
 
 body {
-  @apply bg-vanilla-100
+	@apply bg-vanilla-100;
 }

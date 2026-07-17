@@ -1,0 +1,3 @@
+# SPA routing for Cloudflare Pages / Netlify: /room/<code> is resolved by the
+# client router, so every path serves the same shell (PLAN.md 4.7).
+/*  /index.html  200
