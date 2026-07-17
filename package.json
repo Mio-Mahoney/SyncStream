@@ -41,7 +41,6 @@
 		"mp4-muxer": "^5.2.2",
 		"mp4box": "^2.4.1",
 		"shaka-player": "^5.2.1",
-		"short-unique-id": "^5.2.0",
 		"trystero": "^0.25.3"
 	}
 }
