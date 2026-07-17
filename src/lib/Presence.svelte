@@ -6,25 +6,35 @@
 	 * host is asking the same question on both screens and the answer used to
 	 * change shape between them: names before the film, a bare "1 watching"
 	 * during it.
+	 *
+	 * `reader` is which end of the room is reading, and it picks the sentence
+	 * rather than the caller doing it: the same roster means "your link worked"
+	 * to a host and "these are the people you came for" to a guest, and a
+	 * sentence written for one of them is not safe in front of the other.
 	 */
 
-	import { presence } from '$lib/invite';
+	import { presence, watching } from '$lib/invite';
 
 	let {
-		guests,
-		testid
+		names,
+		testid,
+		reader = 'host'
 	}: {
-		guests: readonly { peerId: string; name: string }[];
+		/** Everyone in the room but the reader, by name. */
+		names: readonly string[];
 		testid: string;
+		reader?: 'host' | 'guest';
 	} = $props();
 
-	const here = $derived(presence(guests.map((g) => g.name)));
+	const here = $derived(reader === 'host' ? presence(names) : watching(names));
 </script>
 
-<p class="flex items-center gap-2 text-sm text-moonstone-800" data-testid={testid}>
-	<span
-		class="h-2 w-2 shrink-0 rounded-full {guests.length ? 'bg-moonstone-500' : 'bg-moonstone-200'}"
-		aria-hidden="true"
-	></span>
-	{here}
-</p>
+{#if here}
+	<p class="flex items-center gap-2 text-sm text-moonstone-800" data-testid={testid}>
+		<span
+			class="h-2 w-2 shrink-0 rounded-full {names.length ? 'bg-moonstone-500' : 'bg-moonstone-200'}"
+			aria-hidden="true"
+		></span>
+		{here}
+	</p>
+{/if}

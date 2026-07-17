@@ -85,6 +85,25 @@ export type Status = {
 export type Waiting = { t: 'waiting'; on: string[]; you: boolean };
 
 /**
+ * Host tells each guest who they are watching with: itself, plus every other
+ * guest. The room's population is the host's to state, and only the host's.
+ *
+ * A guest cannot answer this from its own peers, and the tempting assumption
+ * that it can is wrong in a way that never heals: the Phase 5 mesh links guests
+ * to each other opportunistically, not exhaustively, so a guest's peer list is
+ * who it happens to be meshed with. Measured in a three-guest room, two guests
+ * saw all three peers and the third saw only two - permanently. Rendering that
+ * would tell someone they were watching with two people while three watched.
+ * Every guest is connected to the host by definition, which is what makes the
+ * host the one honest source.
+ *
+ * Sent per link and not broadcast, for the reason `Waiting` is: `people`
+ * excludes the recipient, because a guest is never told which name is theirs
+ * and would read their own name as a stranger's.
+ */
+export type Roster = { t: 'roster'; people: string[] };
+
+/**
  * Which rungs are warm enough to select (PLAN.md 4.2, 4.5).
  *
  * Not in the plan's protocol sketch, but its rung-warmth rule needs a wire
@@ -114,6 +133,7 @@ export type ControlMessage =
 	| Intent
 	| Status
 	| Waiting
+	| Roster
 	| Rungs
 	| Have
 	| SourcesReq

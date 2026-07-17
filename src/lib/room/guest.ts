@@ -45,6 +45,22 @@ export type GuestRoomOptions = {
 	 * searching, and reads "looking for the host" while sitting next to it.
 	 */
 	onHostFound: (name: string) => void;
+	/**
+	 * Who this guest is watching with: the host, then every other guest, as the
+	 * host states it and never including us.
+	 *
+	 * The host's counterpart of this fact has had a screen of its own since the
+	 * invite panel ("Guest 412 is here" - the proof their link worked). A guest
+	 * was never told any of it: with the film up, their entire page was the room
+	 * code and a clock, so the people they came to watch with were unaccounted
+	 * for on the one screen that IS the watch party.
+	 *
+	 * Comes off the wire rather than from our own peers, and must: the mesh links
+	 * guests opportunistically, so our peer list is who we happen to be meshed
+	 * with, which is a permanent undercount of the room (see `Roster` in
+	 * protocol/control).
+	 */
+	onCompany: (people: string[]) => void;
 	onUnplayable: (reason: string) => void;
 	/**
 	 * Who the room is being held for. `on` names the other guests; `you` says
@@ -289,6 +305,10 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 
 			case 'waiting':
 				if (fromHost) opts.onWaiting(msg.on, msg.you === true);
+				break;
+
+			case 'roster':
+				if (fromHost) opts.onCompany(msg.people);
 				break;
 
 			case 'pong':

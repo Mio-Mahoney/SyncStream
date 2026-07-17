@@ -9,6 +9,7 @@
 	import HostBar from '$lib/HostBar.svelte';
 	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
+	import Presence from '$lib/Presence.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
 	import { tierMessage } from '$lib/media/probe';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
@@ -67,6 +68,12 @@
 	/** This page's reader is one of them. Only ever true for a guest. */
 	let waitingOnYou = $state(false);
 	let guests = $state<{ peerId: string; name: string }[]>([]);
+	/**
+	 * A guest's read of the same roster, as the host states it: the host, then
+	 * every other guest. Kept apart from `guests`, which is the host's own view
+	 * and never contains a host.
+	 */
+	let company = $state<string[]>([]);
 	let ready = $state(false);
 	/** Set once the host says hello. Empty means we are still searching. */
 	let hostName = $state('');
@@ -287,6 +294,7 @@
 				started = false;
 			},
 			onHostFound: (n) => (hostName = n),
+			onCompany: (p) => (company = p),
 			onUnplayable: (reason) => (unplayable = reason),
 			onWaiting: (on, you) => {
 				waitingOn = on;
@@ -589,6 +597,26 @@
 			invite button in the DOM alongside the panel's - two invite affordances,
 			one of them invisible.
 		-->
+		<!--
+			The guest's half of the bar, and the last screen in the app where the room
+			went unaccounted for. A host has been told who is here since the invite
+			panel; a guest watching a film had a page consisting of the room code and a
+			clock, so the people they came to watch WITH - the entire difference between
+			this and opening the file alone - were nowhere on it. The names were live in
+			the guest's own engine the whole time, learned from each peer's hello, and
+			simply never left it.
+
+			Under the player, exactly where the host reads the same fact, and gated on
+			`ready` for the same reason HostBar is: the enclosing block stays mounted to
+			preserve the <video>, so `hidden` would leave this in the DOM through every
+			phase the waiting room is speaking for.
+		-->
+		{#if !isHost && ready}
+			<div class="mt-3">
+				<Presence names={company} reader="guest" testid="company" />
+			</div>
+		{/if}
+
 		{#if isHost && ready}
 			<HostBar
 				{shareUrl}

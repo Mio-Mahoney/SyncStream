@@ -125,3 +125,60 @@ test('the host sees who is watching by name while the film plays', async ({ page
 	await guest.close();
 	expect(errors, 'host page errors').toEqual([]);
 });
+
+test('a guest watching alone with the host is told so, and never named to itself', async ({
+	page,
+	context
+}) => {
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest, errors } = await openGuest(context, code);
+
+	// The mirror of the host's line above, and the half that was missing: with the
+	// film up, a guest's entire page was the room code and a clock.
+	const company = guest.getByTestId('company');
+	await expect(company).toHaveText(/Watching with Host\./, { timeout: 45_000 });
+
+	// The one name that may never appear here is the reader's own: nothing in the
+	// app ever tells a guest which "Guest NNN" they are, so their own name reads
+	// as one more stranger in the room. This guest is the only guest, so any
+	// "Guest NNN" at all is theirs.
+	await expect(company).not.toHaveText(/Guest \d+/);
+	expect(errors, 'guest page errors').toEqual([]);
+});
+
+test('a guest is told about the guests it is not meshed with', async ({ page, context }) => {
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const guests = await Promise.all([
+		openGuest(context, code),
+		openGuest(context, code),
+		openGuest(context, code)
+	]);
+
+	// Three, deliberately, and this is the assertion that needs them. The mesh
+	// links guests to each other opportunistically, so a roster built from a
+	// guest's own peers undercounts the room - measured here, two guests saw all
+	// three peers and the third permanently saw two, and was told it was watching
+	// with two people while three watched. Two guests would not catch that: they
+	// almost always mesh to each other, so a peer-derived roster looks correct
+	// right up to the party that is big enough to matter.
+	//
+	// Every guest is connected to the host by definition, so the host's count is
+	// the room's. Each reader sees the host plus the two guests who are not them,
+	// which nameList renders as "and 1 other".
+	for (const { page: g } of guests) {
+		await expect(g.getByTestId('company')).toHaveText(
+			/Watching with Host, Guest \d+ and 1 other\./,
+			{
+				timeout: 45_000
+			}
+		);
+	}
+
+	// And it is a roster, not a greeting: someone leaving has to leave it.
+	await guests[2].page.close();
+	for (const { page: g } of guests.slice(0, 2)) {
+		await expect(g.getByTestId('company')).toHaveText(/Watching with Host and Guest \d+\./, {
+			timeout: 45_000
+		});
+	}
+});

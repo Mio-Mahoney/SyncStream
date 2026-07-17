@@ -132,8 +132,32 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		}
 	});
 
-	const announceGuests = () =>
+	const announceGuests = () => {
 		opts.onGuests([...guestNames].map(([peerId, name]) => ({ peerId, name })));
+		announceRoster();
+	};
+
+	/**
+	 * Tell each guest who they are watching with. Ours is the only complete view
+	 * of the room - a guest sees only the peers the mesh happened to link it to -
+	 * so this cannot be left for them to work out (see `Roster` in
+	 * protocol/control).
+	 *
+	 * Tailored per link: the recipient is dropped from their own copy, since a
+	 * guest is never told which display name is theirs and would read it as one
+	 * more stranger in the room.
+	 */
+	const announceRoster = () => {
+		for (const link of net.links()) {
+			link.channels.sendControl({
+				t: 'roster',
+				people: [
+					opts.name,
+					...[...guestNames].filter(([id]) => id !== link.peerId).map(([, n]) => n)
+				]
+			});
+		}
+	};
 
 	const sendReady = (link: PeerLink) => {
 		if (!origin) return;

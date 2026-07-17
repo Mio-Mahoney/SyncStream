@@ -50,7 +50,7 @@
 {/if}
 
 <div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-	<Presence {guests} testid="guests" />
+	<Presence names={guests.map((g) => g.name)} testid="guests" />
 
 	<div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-moonstone-800">
 		<label class="flex cursor-pointer items-center gap-2">

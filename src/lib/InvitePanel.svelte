@@ -40,6 +40,6 @@
 	</div>
 
 	<div class="mt-5 border-t border-moonstone-100 pt-4">
-		<Presence {guests} testid="invite-guests" />
+		<Presence names={guests.map((g) => g.name)} testid="invite-guests" />
 	</div>
 </section>
