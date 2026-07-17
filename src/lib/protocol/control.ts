@@ -73,8 +73,16 @@ export type Status = {
 	name: string;
 };
 
-/** Host tells the room who it is waiting for, so guests can show it too. */
-export type Waiting = { t: 'waiting'; on: string[] };
+/**
+ * Host tells the room who it is waiting for, so guests can show it too.
+ *
+ * Sent per link rather than broadcast, because the one guest who cannot read
+ * "Waiting for Guest 412" is Guest 412: nothing ever tells a guest which name
+ * is theirs, so the person whose stall froze the film is the only reader who
+ * cannot tell the banner is about them. `on` therefore excludes the recipient
+ * and `you` says whether the recipient is one of the guests being waited on.
+ */
+export type Waiting = { t: 'waiting'; on: string[]; you: boolean };
 
 /**
  * Which rungs are warm enough to select (PLAN.md 4.2, 4.5).

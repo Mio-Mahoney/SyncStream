@@ -46,7 +46,12 @@ export type GuestRoomOptions = {
 	 */
 	onHostFound: (name: string) => void;
 	onUnplayable: (reason: string) => void;
-	onWaiting: (on: string[]) => void;
+	/**
+	 * Who the room is being held for. `on` names the other guests; `you` says
+	 * this guest is one of them, which is not derivable here - a guest is never
+	 * told which display name is its own.
+	 */
+	onWaiting: (on: string[], you: boolean) => void;
 	onError: (err: Error) => void;
 	onHostGone: () => void;
 	signal?: AbortSignal;
@@ -226,7 +231,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 
 			case 'waiting':
-				if (fromHost) opts.onWaiting(msg.on);
+				if (fromHost) opts.onWaiting(msg.on, msg.you === true);
 				break;
 
 			case 'pong':

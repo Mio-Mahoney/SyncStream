@@ -15,7 +15,7 @@ import { INIT_SEGMENT, type ControlMessage, type Intent } from '$lib/protocol/co
 import { hostRoomChecked, shareLinkQuery, type HostRendezvous } from '$lib/rendezvous/room';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
 import { removePeer, stats, updatePeer } from '$lib/stats.svelte';
-import { HostState, ReadinessBarrier } from '$lib/sync/state';
+import { HostState, ReadinessBarrier, type BlockedPeer } from '$lib/sync/state';
 import { OCCUPANCY_PROBE_MS } from '$lib/rendezvous/room';
 
 export type HostRoom = {
@@ -102,19 +102,33 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	const state = new HostState(opts.video, (s) => net.broadcastControl(s));
 
-	const barrier = new ReadinessBarrier({
-		onPause: (waitingOn) => {
-			state.pause();
-			net.broadcastControl({
+	/**
+	 * Per link, not broadcast. The barrier's whole purpose is to make a stalling
+	 * guest visible, and the guest it names is the one person the broadcast
+	 * cannot reach: they are never told which "Guest 412" is them, so the room's
+	 * one explanation for why their film froze reads as news about a stranger.
+	 * Each guest is told about the others by name, and about itself as "you".
+	 */
+	const announceWaiting = (blocked: readonly BlockedPeer[]) => {
+		for (const link of net.links()) {
+			link.channels.sendControl({
 				t: 'waiting',
-				on: waitingOn.map((p) => guestNames.get(p) ?? 'a guest')
+				on: blocked.filter((b) => b.peerId !== link.peerId).map((b) => b.name),
+				you: blocked.some((b) => b.peerId === link.peerId)
 			});
-			opts.onWaiting(waitingOn.map((p) => guestNames.get(p) ?? 'a guest'));
+		}
+		// The host is not a guest, so nothing here is ever about them.
+		opts.onWaiting(blocked.map((b) => b.name));
+	};
+
+	const barrier = new ReadinessBarrier({
+		onPause: (blocked) => {
+			state.pause();
+			announceWaiting(blocked);
 		},
 		onResume: () => {
 			state.resume();
-			net.broadcastControl({ t: 'waiting', on: [] });
-			opts.onWaiting([]);
+			announceWaiting([]);
 		}
 	});
 

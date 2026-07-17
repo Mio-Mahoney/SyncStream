@@ -131,6 +131,10 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 			timeout: 60_000
 		}
 	);
+	const guestName = (await snapshot(page)).peers[0]?.name;
+	expect(guestName, 'the host knows the guest by name before the barrier trips').toMatch(
+		/^Guest \d+$/
+	);
 
 	await throttle(page, 3_000_000);
 	await page.getByTestId('play').click();
@@ -145,8 +149,25 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 			timeout: 60_000
 		}
 	);
-	expect(tripped.waitingOn.join(','), 'the host names who it waits for').not.toBe('');
-	await expect(page.getByTestId('waiting')).toBeVisible();
+	// Regression: this asserted only that the list was non-empty, which the bug it
+	// was meant to catch passed with flying colours. The barrier reports names, and
+	// the host looked those names up in a map keyed by peer id -- so every lookup
+	// missed and the banner read "Waiting for a guest" no matter who it waited for.
+	expect(tripped.waitingOn, 'the host names who it waits for').toContain(guestName);
+	await expect(page.getByTestId('waiting')).toHaveText(
+		new RegExp(`Waiting for ${guestName} to catch up`)
+	);
+
+	// The guest's half. "Waiting for Guest 412" is the one sentence Guest 412
+	// cannot act on, because nothing ever told them that is their name -- so the
+	// person whose stall froze the film read it as news about someone else.
+	const guestNotice = guest.getByTestId('waiting');
+	await expect(guestNotice).toHaveAttribute('data-you', 'true');
+	await expect(guestNotice).toContainText('Waiting for you to catch up');
+	await expect(guestNotice).not.toContainText(guestName!);
+	await expect(guest.getByTestId('waiting-you')).toBeVisible();
+	// The host is never one of the guests the barrier waits on.
+	await expect(page.getByTestId('waiting')).toHaveAttribute('data-you', 'false');
 
 	// Recovery is the half that is easy to get wrong: the room must un-stick
 	// itself once the guest catches up, with no user action.
@@ -164,6 +185,11 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 		(t) => t > 0.5,
 		{ what: 'the guest to resume playing' }
 	);
+	// Both notices clear. A banner telling a guest they are behind, left up over a
+	// film that is playing again, is the shape of bug iteration 8 found on the
+	// unplayable path: a one-way announcement with no "never mind" is a latch.
+	await expect(guestNotice).toBeHidden();
+	await expect(page.getByTestId('waiting')).toBeHidden();
 });
 
 /**

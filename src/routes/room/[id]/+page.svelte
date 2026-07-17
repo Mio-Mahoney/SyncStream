@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import BarrierNotice from '$lib/BarrierNotice.svelte';
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
 	import FilePicker from '$lib/FilePicker.svelte';
 	import HostBar from '$lib/HostBar.svelte';
@@ -49,7 +50,10 @@
 	let error = $state('');
 	let unplayable = $state('');
 	let shareUrl = $state('');
+	/** Guests holding the room up, never including whoever is reading this page. */
 	let waitingOn = $state<string[]>([]);
+	/** This page's reader is one of them. Only ever true for a guest. */
+	let waitingOnYou = $state(false);
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	let ready = $state(false);
 	/** Set once the host says hello. Empty means we are still searching. */
@@ -147,6 +151,7 @@
 			},
 			onError: (e) => (error = e.message),
 			onGuests: (g) => (guests = g),
+			// A host is never one of the guests the barrier waits on.
 			onWaiting: (on) => {
 				waitingOn = on;
 				stats.waitingOn = on;
@@ -191,9 +196,13 @@
 			},
 			onHostFound: (n) => (hostName = n),
 			onUnplayable: (reason) => (unplayable = reason),
-			onWaiting: (on) => {
+			onWaiting: (on, you) => {
 				waitingOn = on;
-				stats.waitingOn = on;
+				waitingOnYou = you;
+				// The oracle answers "who is the room waiting on", so our own name
+				// belongs in it - the UI's "you" is the same fact worded for a reader
+				// who was never told which Guest NNN they are.
+				stats.waitingOn = you ? [...on, name] : on;
 			},
 			onError: (e) => (error = e.message),
 			onHostGone: () => {
@@ -392,10 +401,13 @@
 			/>
 		</div>
 
-		{#if waitingOn.length}
-			<p class="mt-3 rounded bg-vanilla-500 px-4 py-2" data-testid="waiting">
-				Waiting for {waitingOn.join(', ')}
-			</p>
+		<!--
+			`waitingOnYou` is its own condition, not folded into the list: the guest
+			the room is waiting for is excluded from `on` precisely so the banner can
+			address them, which means their own stall shows up here as an empty list.
+		-->
+		{#if waitingOn.length || waitingOnYou}
+			<BarrierNotice on={waitingOn} you={waitingOnYou} />
 		{/if}
 
 		<!--
