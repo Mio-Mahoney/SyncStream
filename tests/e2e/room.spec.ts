@@ -390,3 +390,74 @@ test('every player control is reachable on a phone', async ({ page }) => {
 	await expect(page.getByTestId('volume')).toBeVisible();
 	await expect(page.getByTestId('fullscreen')).toBeInViewport();
 });
+
+/**
+ * The barrier's banner is the only account anybody gets of a film that froze on
+ * its own, and it was withheld from the one reader who most needed it.
+ *
+ * Fullscreen is how a film gets watched, and the fullscreen element is the
+ * player. Everything outside that element is on a lower layer and is not
+ * painted at all while it is up - and the banner was a sibling of the player,
+ * so a guest who went fullscreen and then stalled got a black picture, a
+ * stopped clock, and nothing whatsoever saying why or that it fixes itself.
+ *
+ * Containment in the fullscreen element is the assertion, because `toBeVisible`
+ * cannot see this: it passed on the unfixed build, since the element still has
+ * a layout box - it is simply never rendered.
+ *
+ * Same deterministic setup as the opening-buffer test above: throttle before
+ * the file, so the barrier holds long enough to assert against.
+ */
+test('the barrier notice reaches a guest watching fullscreen', async ({ page, context }) => {
+	const { code } = await openRoom(page);
+	const { page: guest } = await openGuest(context, code);
+	await until(
+		() => snapshot(page),
+		(s) => s.peers.length === 1,
+		{ what: 'the guest to reach the host', timeout: 60_000 }
+	);
+
+	await throttle(page, 400_000);
+	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
+
+	const notice = guest.getByTestId('waiting');
+	await expect(notice).toBeVisible({ timeout: 60_000 });
+
+	await guest.getByTestId('fullscreen').click();
+	const fs = await guest.evaluate(() => {
+		const el = document.fullscreenElement;
+		const n = document.querySelector('[data-testid="waiting"]');
+		return { entered: !!el, painted: !!(el && n && el.contains(n)) };
+	});
+	expect(fs.entered, 'the fullscreen button must actually enter fullscreen').toBe(true);
+	expect(fs.painted, 'a stalled guest in fullscreen must be told why the film stopped').toBe(true);
+	// The banner surviving fullscreen is worth nothing if it arrives wordless.
+	await expect(notice).toContainText('Still loading the film for you');
+	await expect(guest.getByTestId('waiting-you')).toBeVisible();
+	await guest.evaluate(() => document.exitFullscreen());
+
+	// The overlay spans the whole player so that it can centre in it, which puts
+	// it over the control bar as well - so the bar has to stay clickable through
+	// it. Asserted against the notice specifically rather than against "the play
+	// button is on top", because `?debug=1` puts its own overlay on the page and
+	// that is the harness, not the room.
+	const hitByNotice = await guest.evaluate(() => {
+		const play = document.querySelector('[data-testid="play"]')!.getBoundingClientRect();
+		const hit = document.elementFromPoint(play.x + play.width / 2, play.y + play.height / 2);
+		const notice = document.querySelector('[data-testid="waiting"]')!;
+		return !!hit && (notice.contains(hit) || notice.parentElement === hit);
+	});
+	expect(hitByNotice, 'the notice must not shield the controls under it').toBe(false);
+
+	// The other half of putting it on the film: the player is `overflow-hidden`,
+	// which turns an overlay that does not fit into one that does not exist
+	// (iteration 12's control bar), and a phone is where a stalled guest is most
+	// likely to be sitting.
+	await guest.setViewportSize({ width: 390, height: 844 });
+	const clipped = await guest.evaluate(() => {
+		const p = document.querySelector('.player')!.getBoundingClientRect();
+		const n = document.querySelector('[data-testid="waiting"]')!.getBoundingClientRect();
+		return n.top < p.top || n.bottom > p.bottom || n.left < p.left || n.right > p.right;
+	});
+	expect(clipped, 'the notice must not be clipped out of the player on a phone').toBe(false);
+});

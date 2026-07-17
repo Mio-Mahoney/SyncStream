@@ -466,7 +466,7 @@
 	{/if}
 
 	<div class="w-full max-w-5xl" class:hidden={!ready}>
-		<div bind:this={player} class="player overflow-hidden rounded bg-black">
+		<div bind:this={player} class="player relative overflow-hidden rounded bg-black">
 			<video
 				bind:this={video}
 				ontimeupdate={onTimeUpdate}
@@ -489,16 +489,22 @@
 				onToggle={togglePlay}
 				onSeek={seek}
 			/>
-		</div>
 
-		<!--
-			`waitingOnYou` is its own condition, not folded into the list: the guest
-			the room is waiting for is excluded from `on` precisely so the banner can
-			address them, which means their own stall shows up here as an empty list.
-		-->
-		{#if waitingOn.length || waitingOnYou}
-			<BarrierNotice on={waitingOn} you={waitingOnYou} {started} />
-		{/if}
+			<!--
+				Inside the player, not below it. This is the fullscreen element, and a
+				sibling of it is not painted while fullscreen is up - so the one account
+				anybody gets of a film that froze on its own was withheld from whoever
+				was watching the way a film is meant to be watched: full screen, staring
+				at a picture that had just stopped, with nothing on it saying why.
+
+				`waitingOnYou` is its own condition, not folded into the list: the guest
+				the room is waiting for is excluded from `on` precisely so the banner can
+				address them, which means their own stall shows up here as an empty list.
+			-->
+			{#if waitingOn.length || waitingOnYou}
+				<BarrierNotice on={waitingOn} you={waitingOnYou} {started} />
+			{/if}
+		</div>
 
 		<!--
 			The invite panel's two facts do not stop mattering once the film starts:
