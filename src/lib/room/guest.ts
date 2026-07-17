@@ -67,6 +67,20 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	const clock = new ClockSync((msg) => hostLink?.channels.sendControl(msg));
 	const sync = new GuestSync(opts.video, clock);
 
+	/**
+	 * A segReq or its segData/segErr reply going missing -- on a connection whose
+	 * signaling rode a lossy public relay, or a peer whose channel died between
+	 * the request and the reply -- otherwise hangs this fetch forever: nothing
+	 * here times out on its own, and the host has no reason to resend something
+	 * it already sent. That is invisible and unrecoverable for exactly the
+	 * request that gates first frame, the init segment, since `player.load()`
+	 * awaits it with no timeout of its own to fall back on. Matches
+	 * mesh.ts's PEER_DEADLINE_MS: reject and let Shaka's own retry policy
+	 * re-issue the request with a fresh reqId, which is a fresh chance for a
+	 * one-off relay hiccup to not repeat.
+	 */
+	const HOST_FETCH_TIMEOUT_MS = 15_000;
+
 	/** reqId -> resolver, for segments in flight to the host. */
 	let nextReqId = 1;
 	const pending = new Map<
@@ -80,7 +94,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			if (!link) return reject(new Error('guest: no host connected'));
 
 			const reqId = nextReqId++;
-			const onAbort = () => {
+			const finish = (err: () => Error) => {
 				const p = pending.get(reqId);
 				if (!p) return;
 				pending.delete(reqId);
@@ -89,14 +103,29 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				// second, a seek leaks every segment it abandoned.
 				link.channels.sendControl({ t: 'segCancel', reqId });
 				link.channels.cancelInbound(reqId);
-				reject(new DOMException('segment request aborted', 'AbortError'));
+				reject(err());
 			};
+			const onAbort = () => finish(() => new DOMException('segment request aborted', 'AbortError'));
 			signal.addEventListener('abort', onAbort, { once: true });
+
+			const timer = setTimeout(
+				() =>
+					finish(
+						() =>
+							new Error(
+								`guest: no reply from host for segment ${repId}/${track}/${segIdx} within ${HOST_FETCH_TIMEOUT_MS}ms`
+							)
+					),
+				HOST_FETCH_TIMEOUT_MS
+			);
 
 			pending.set(reqId, {
 				resolve,
 				reject,
-				cleanup: () => signal.removeEventListener('abort', onAbort)
+				cleanup: () => {
+					signal.removeEventListener('abort', onAbort);
+					clearTimeout(timer);
+				}
 			});
 			link.channels.sendControl({ t: 'segReq', reqId, repId, track, segIdx });
 		});
