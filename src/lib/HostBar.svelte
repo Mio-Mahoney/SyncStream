@@ -17,12 +17,17 @@
 		shareUrl,
 		guests,
 		barrierEnabled,
-		onToggleBarrier
+		onToggleBarrier,
+		changing,
+		onToggleChanging
 	}: {
 		shareUrl: string;
 		guests: readonly { peerId: string; name: string }[];
 		barrierEnabled: boolean;
 		onToggleBarrier: () => void;
+		/** The picker is open below, waiting for a file to replace this one. */
+		changing: boolean;
+		onToggleChanging: () => void;
 	} = $props();
 </script>
 
@@ -34,6 +39,21 @@
 			<input type="checkbox" checked={barrierEnabled} onchange={onToggleBarrier} />
 			Pause when someone falls behind
 		</label>
+		<!--
+			The only way off a film once it is on. The picker unmounted the moment a
+			file was accepted, so a host who put on the wrong one could reach it again
+			only by reloading - which, for a host, ends the room and evicts everybody
+			over a misclick.
+		-->
+		<button
+			type="button"
+			class="rounded border border-moonstone-400 px-3 py-1 transition hover:border-moonstone-500 hover:bg-white/80 focus-visible:ring-2 focus-visible:ring-moonstone-500 focus-visible:outline-none"
+			onclick={onToggleChanging}
+			aria-expanded={changing}
+			data-testid="change-video"
+		>
+			{changing ? 'Keep this video' : 'Change video'}
+		</button>
 		<!--
 			min-w-0 so the link field the compact variant reveals on a refused
 			clipboard can shrink into whatever room is left rather than pushing the

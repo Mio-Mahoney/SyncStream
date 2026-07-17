@@ -235,3 +235,61 @@ test('a throttled guest drops down the ladder and keeps playing', async ({ page,
 	);
 	expect((await snapshot(guest)).bufferedAhead).toBeGreaterThan(0);
 });
+
+/**
+ * A host who puts on the wrong film had one way out: reload, which ends the
+ * room. The picker unmounted the moment a file was accepted, so the control for
+ * choosing a film only existed before there was one to regret.
+ */
+test('the host can change the video without ending the room', async ({ page, context }) => {
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, code);
+
+	await until(
+		() => snapshot(guest),
+		(x) => x.ttff !== null,
+		{
+			what: 'the guest to play the first film',
+			timeout: 60_000
+		}
+	);
+	const duration = (p: typeof page) =>
+		p.evaluate(() => document.querySelector('video')?.duration ?? 0);
+	expect(await duration(guest)).toBeGreaterThan(50);
+
+	await page.getByTestId('change-video').click();
+	await page.getByTestId('file-input').setInputFiles(fixture('no-audio.mp4'));
+
+	// Duration is the oracle: the two fixtures are 60s and 30s, so a guest still
+	// on the first film cannot fake this.
+	await until(
+		() => duration(guest),
+		(d) => d > 25 && d < 35,
+		{
+			what: 'the guest to follow the host onto the second film',
+			timeout: 60_000
+		}
+	);
+	await until(
+		() => duration(page),
+		(d) => d > 25 && d < 35,
+		{
+			what: 'the host itself to be playing the second film',
+			timeout: 30_000
+		}
+	);
+
+	// A new film starts at the top, paused, exactly as the first one did.
+	await page.getByTestId('play').click();
+
+	// Following is not enough: it has to play, which is the whole pipeline
+	// (origin, mesh, Shaka) rebuilt around a file that arrived mid-room.
+	await until(
+		() => videoTime(guest),
+		(t) => t > 0.5,
+		{
+			what: 'the second film to actually play for the guest',
+			timeout: 60_000
+		}
+	);
+});

@@ -76,7 +76,15 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	let hostLink: PeerLink | null = null;
 	let player: shaka.Player | null = null;
 	let mesh: Mesh | null = null;
-	let loaded = false;
+	/**
+	 * The manifest of the film in play, or null when there is none.
+	 *
+	 * Identity rather than a boolean, because both questions matter and they have
+	 * different answers: the host re-sends `ready` for the film already playing
+	 * (once from `onPeer`, once from the hello it answers), and a repeat of that
+	 * must not restart anything - while a genuinely different film must.
+	 */
+	let loadedMpd: string | null = null;
 
 	const clock = new ClockSync((msg) => hostLink?.channels.sendControl(msg));
 	const sync = new GuestSync(opts.video, clock);
@@ -152,9 +160,45 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		fn(p);
 	};
 
+	/**
+	 * Take down the film that is playing, leaving the room itself alone.
+	 *
+	 * The host may put on a second film without ending the room, and everything
+	 * `startPlayback` built is about the first one: a Shaka player holding a
+	 * source buffer full of it, segment requests in flight for it, and a mesh
+	 * cache keyed by repId/track/segIdx - keys the next film reuses for entirely
+	 * different bytes. Keeping that cache would have us serve another guest the
+	 * old film's segment 3 under the new film's name, and mesh.ts is explicit
+	 * that it cannot tell: "the key is content-addressing by convention, not by
+	 * digest". So the cache goes with the film, which a fresh mesh is the honest
+	 * way to get. `net.onPeer` replays the links we already have, so rebuilding
+	 * it re-wires the room rather than dropping it.
+	 */
+	const stopPlayback = async () => {
+		if (loadedMpd === null) return;
+		loadedMpd = null;
+		sync.stop();
+		opts.video.pause();
+
+		// Before the mesh goes, so Shaka's own aborts settle their requests
+		// through the transport that issued them.
+		const old = player;
+		player = null;
+		await old?.destroy();
+
+		for (const reqId of [...pending.keys()])
+			settle(reqId, (p) => p.reject(new Error('guest: the host changed the video')));
+
+		mesh?.close();
+		mesh = hostLink
+			? createMesh({ network: net, hostPeerId: hostLink.peerId, fetchFromHost })
+			: null;
+	};
+
 	const startPlayback = async (mpd: string, duration: number) => {
-		if (loaded) return;
-		loaded = true;
+		if (loadedMpd === mpd) return;
+		await stopPlayback();
+		loadedMpd = mpd;
 		markTtffStart();
 
 		player = await createPlayer(opts.video);
@@ -196,6 +240,19 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		opts.onReady(duration);
 	};
 
+	/**
+	 * One film at a time, in the order the host announced them. `ready` arrives
+	 * from an event handler that cannot await, so two of them in quick succession
+	 * would otherwise have a teardown running against a `player.load()` that is
+	 * still building the thing being torn down.
+	 */
+	let playback: Promise<void> = Promise.resolve();
+	const queuePlayback = (mpd: string, duration: number) => {
+		playback = playback
+			.then(() => startPlayback(mpd, duration))
+			.catch((err: Error) => opts.onError(err));
+	};
+
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
 		// Anything below this line is authoritative, so it must come from the
 		// host and nobody else.
@@ -213,7 +270,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 
 			case 'ready':
-				if (fromHost) void startPlayback(msg.mpd, msg.duration);
+				if (fromHost) queuePlayback(msg.mpd, msg.duration);
 				break;
 
 			case 'unplayable':
@@ -227,7 +284,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			case 'rungs':
 				if (!fromHost) break;
 				stats.availableRungs = msg.available;
-				if (player && loaded) configurePlayer(player, { availableRungs: msg.available });
+				if (player && loadedMpd) configurePlayer(player, { availableRungs: msg.available });
 				break;
 
 			case 'waiting':

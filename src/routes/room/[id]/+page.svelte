@@ -92,6 +92,13 @@
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
 	let reading = $state(false);
+	/**
+	 * The host asked for the picker back over a film that is already playing.
+	 * Opt-in rather than always-on: the picker owns window-wide drag-and-drop, and
+	 * a file dropped on a room mid-film is far more likely to be a misaimed drag
+	 * than a decision to replace what everyone is watching.
+	 */
+	let changing = $state(false);
 	let barrierEnabled = $state(true);
 	let debug = $state(false);
 
@@ -224,6 +231,12 @@
 				// pulled through our own origin like any guest would.
 				if (objectUrl) video.src = objectUrl;
 				ready = true;
+				changing = false;
+				// A film that has just been put on has not played for anyone yet, so
+				// the barrier's opening buffer is nobody falling behind - the same
+				// distinction the first film gets, which a latch would lose on the
+				// second.
+				started = false;
 				status = '';
 			},
 			onError: (e) => (error = e.message),
@@ -270,6 +283,9 @@
 				// a red banner swearing the video could not be played.
 				unplayable = '';
 				ready = true;
+				// See the host's onSource: on a second film this is a reader who has
+				// watched nothing of it, whatever they watched of the first.
+				started = false;
 			},
 			onHostFound: (n) => (hostName = n),
 			onUnplayable: (reason) => (unplayable = reason),
@@ -543,9 +559,29 @@
 			one of them invisible.
 		-->
 		{#if isHost && ready}
-			<HostBar {shareUrl} {guests} {barrierEnabled} onToggleBarrier={toggleBarrier} />
+			<HostBar
+				{shareUrl}
+				{guests}
+				{barrierEnabled}
+				onToggleBarrier={toggleBarrier}
+				{changing}
+				onToggleChanging={() => (changing = !changing)}
+			/>
 		{/if}
 	</div>
+
+	<!--
+		Below the player rather than in place of it, so the film everyone is still
+		watching keeps playing while the host looks for its replacement - and so
+		backing out of the picker costs nothing. `onSource` closes it once the new
+		file is accepted; a rejected one leaves it open, which is the whole point of
+		the picker surviving a rejection.
+	-->
+	{#if isHost && ready && changing}
+		<div class="mt-6 flex w-full flex-col items-center">
+			<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
+		</div>
+	{/if}
 </main>
 
 <style>
