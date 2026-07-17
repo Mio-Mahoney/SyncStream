@@ -368,6 +368,29 @@
 		barrierEnabled = !barrierEnabled;
 		host?.barrier.setEnabled(barrierEnabled);
 	}
+
+	/**
+	 * Fullscreen outlives the film. `ready` going false takes the player off
+	 * screen with display:none, and that does NOT exit fullscreen - the browser
+	 * stays in fullscreen mode with the fullscreen element rendering nothing. So
+	 * a guest whose host walked out, having watched the way a film is meant to be
+	 * watched, is left in a chromeless window showing a "watch party is over"
+	 * card laid out for a normal one, with nothing on screen accounting for why
+	 * the window will not come back.
+	 *
+	 * Pointedly not wired to the readiness barrier, which also stops the film:
+	 * that clears itself in seconds and the film resumes, and dropping someone
+	 * out of fullscreen for a stall would be worse than the stall. This runs only
+	 * when the player is gone and there is nothing left to be fullscreen about.
+	 */
+	$effect(() => {
+		if (ready || !player) return;
+		const fs = document.fullscreenElement;
+		if (!fs || !player.contains(fs)) return;
+		// Rejects if the browser left fullscreen by some other route first, which
+		// is the state we wanted anyway.
+		void document.exitFullscreen().catch(() => {});
+	});
 </script>
 
 <svelte:head>

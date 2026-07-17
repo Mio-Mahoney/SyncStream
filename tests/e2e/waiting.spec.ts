@@ -211,3 +211,53 @@ test('a guest whose host leaves has the film stopped, not just hidden', async ({
 	expect(later.paused, 'and stays stopped -- nothing restarts it').toBe(true);
 	expect(later.at, 'and does not advance').toBeCloseTo(stopped.at, 2);
 });
+
+test('a guest watching fullscreen is let out of it when the room ends', async ({
+	page,
+	context
+}) => {
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, code);
+
+	await until(
+		() => snapshot(guest),
+		(s) => s.ttff !== null,
+		{ what: 'the guest to render a first frame', timeout: 60_000 }
+	);
+	await page.getByTestId('play').click();
+	await until(
+		() => videoTime(guest),
+		(t) => t > 1,
+		{ what: 'the guest to advance' }
+	);
+
+	// The way a film is actually watched.
+	await guest.getByTestId('fullscreen').click();
+	await expect
+		.poll(() => guest.evaluate(() => !!document.fullscreenElement), {
+			message: 'the guest to be watching fullscreen'
+		})
+		.toBe(true);
+
+	// The host walks out.
+	await page.close();
+
+	const waiting = guest.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'ended', { timeout: 60_000 });
+
+	// Regression: the room ending only ever hid the player, and display:none does
+	// not exit fullscreen -- the browser stayed in fullscreen mode with the
+	// fullscreen element rendering nothing, so the guest was left in a chromeless
+	// window with no control on screen accounting for why it would not come back.
+	await expect
+		.poll(() => guest.evaluate(() => document.fullscreenElement?.tagName ?? null), {
+			message: 'the room ending to let the guest out of fullscreen'
+		})
+		.toBe(null);
+
+	// The way out has to be on screen, not merely in the DOM: the whole point of
+	// leaving fullscreen is that the page underneath is where the only remaining
+	// control lives.
+	await expect(guest.getByTestId('waiting-title')).toBeVisible();
+	await expect(guest.getByRole('link', { name: 'Back to start' })).toBeVisible();
+});
