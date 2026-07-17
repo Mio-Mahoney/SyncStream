@@ -40,8 +40,16 @@ export type Hello = { t: 'hello'; role: Role; name: string };
  */
 export type Rename = { t: 'rename'; name: string };
 
-/** Host is segmenting and the manifest is valid. */
-export type Ready = { t: 'ready'; mpd: string; duration: number };
+/**
+ * Host is segmenting and the manifest is valid.
+ *
+ * `title` is the film's name, and it is the host's to state for the same reason
+ * `Roster` is: the file is on the host's disk and nowhere else, so a guest has
+ * no way to know what it is watching except by being told. Carried here rather
+ * than in a message of its own because the name and the film arrive together and
+ * stop being true together - a second film supersedes both at once.
+ */
+export type Ready = { t: 'ready'; mpd: string; duration: number; title: string };
 
 /** Host cannot serve this file at all (PLAN.md 4.3 tier 3), with a real reason. */
 export type Unplayable = { t: 'unplayable'; reason: string };

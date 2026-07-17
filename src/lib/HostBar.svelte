@@ -12,6 +12,7 @@
 
 	import CopyLink from '$lib/CopyLink.svelte';
 	import NameTag from '$lib/NameTag.svelte';
+	import NowPlaying from '$lib/NowPlaying.svelte';
 	import Presence from '$lib/Presence.svelte';
 
 	let {
@@ -19,6 +20,7 @@
 		guests,
 		name,
 		onRename,
+		title,
 		note = '',
 		barrierEnabled,
 		onToggleBarrier,
@@ -30,6 +32,12 @@
 		/** What the room calls the host - "Host" until they say otherwise. */
 		name: string;
 		onRename: (name: string) => void;
+		/**
+		 * The film that is on. It answers the question "Change video" begs and
+		 * never used to: that button opens a picker reading "Drop a video here",
+		 * with nothing anywhere saying which film it is offering to replace.
+		 */
+		title: string;
 		/**
 		 * Something about the film that is on, true for as long as it is - today,
 		 * only that it is being converted as it streams rather than played off
@@ -45,6 +53,8 @@
 		onToggleChanging: () => void;
 	} = $props();
 </script>
+
+<NowPlaying {title} testid="host-now-playing" />
 
 {#if note}
 	<!--

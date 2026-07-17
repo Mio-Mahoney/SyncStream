@@ -10,6 +10,7 @@
 	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
 	import NameTag from '$lib/NameTag.svelte';
+	import NowPlaying from '$lib/NowPlaying.svelte';
 	import Presence from '$lib/Presence.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
 	import { fallbackName, readName, saveName } from '$lib/identity';
@@ -64,6 +65,15 @@
 	 * actually playing.
 	 */
 	let converting = $state('');
+	/**
+	 * What the room is watching, as the host names it. Both roles hold it and both
+	 * render it under the player: the host learns it from `onSource` (it is their
+	 * file), a guest is told on `ready` (see film.ts for why nobody could say).
+	 *
+	 * `film` and not `title`, which is this page's tab title - a different string
+	 * for a different surface, and one of them is a room code.
+	 */
+	let film = $state('');
 	let shareUrl = $state('');
 	/** Guests holding the room up, never including whoever is reading this page. */
 	let waitingOn = $state<string[]>([]);
@@ -265,10 +275,11 @@
 			origin: page.url.origin,
 			code,
 			signal,
-			onSource: ({ objectUrl }) => {
+			onSource: ({ objectUrl, title }) => {
 				// A directly-playable file plays off disk; a transcoded one is
 				// pulled through our own origin like any guest would.
 				if (objectUrl) video.src = objectUrl;
+				film = title;
 				ready = true;
 				changing = false;
 				// A film that has just been put on has not played for anyone yet, so
@@ -307,8 +318,9 @@
 			name: nameOnEntry,
 			preferred: strategyFromParams(page.url.searchParams),
 			signal,
-			onReady: (d) => {
+			onReady: ({ duration: d, title }) => {
 				duration = d;
+				film = title;
 				// A second file supersedes the first, and the host's rejection of the
 				// first stops being true the moment this arrives. Nothing used to
 				// clear it, so a guest whose host retried watched the whole film under
@@ -681,6 +693,12 @@
 				room long enough to be asked anything, so without this the only people
 				who could ever say who they are would be the ones who turned up early.
 			-->
+			<!--
+				What they are watching, then who with. The host reads the same two facts
+				in the same order under their own player - one film, one room, and no
+				reason for the two ends of it to disagree about either.
+			-->
+			<NowPlaying title={film} testid="guest-now-playing" />
 			<div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
 				<Presence names={company} reader="guest" testid="company" />
 				<NameTag {name} onRename={rename} testid="guest-name" />
@@ -693,6 +711,7 @@
 				{guests}
 				{name}
 				onRename={rename}
+				title={film}
 				note={converting}
 				{barrierEnabled}
 				onToggleBarrier={toggleBarrier}

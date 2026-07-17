@@ -43,7 +43,11 @@ export type GuestRoomOptions = {
 	/** What to call ourselves until `setName` says otherwise. */
 	name: string;
 	preferred?: StrategyName;
-	onReady: (duration: number) => void;
+	/**
+	 * The film is loaded and playing. `title` is what it is called, which only the
+	 * host can say - the file is on its disk and nowhere else.
+	 */
+	onReady: (film: { duration: number; title: string }) => void;
 	/**
 	 * What the host is called, and the first proof it is there at all.
 	 *
@@ -230,7 +234,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			: null;
 	};
 
-	const startPlayback = async (mpd: string, duration: number) => {
+	const startPlayback = async (mpd: string, duration: number, title: string) => {
 		if (loadedMpd === mpd) return;
 		await stopPlayback();
 		loadedMpd = mpd;
@@ -272,7 +276,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		opts.video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
 		clock.start();
 		sync.start();
-		opts.onReady(duration);
+		opts.onReady({ duration, title });
 	};
 
 	/**
@@ -282,9 +286,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * still building the thing being torn down.
 	 */
 	let playback: Promise<void> = Promise.resolve();
-	const queuePlayback = (mpd: string, duration: number) => {
+	const queuePlayback = (mpd: string, duration: number, title: string) => {
 		playback = playback
-			.then(() => startPlayback(mpd, duration))
+			.then(() => startPlayback(mpd, duration, title))
 			.catch((err: Error) => opts.onError(err));
 	};
 
@@ -315,7 +319,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 
 			case 'ready':
-				if (fromHost) queuePlayback(msg.mpd, msg.duration);
+				if (fromHost) queuePlayback(msg.mpd, msg.duration, msg.title);
 				break;
 
 			case 'unplayable':

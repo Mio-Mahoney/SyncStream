@@ -7,6 +7,7 @@
  * host's own playback (PLAN.md 4.5).
  */
 
+import { filmTitle } from '$lib/film';
 import { createOrigin } from '$lib/media/origin';
 import { probeFile, tierMessage } from '$lib/media/probe';
 import type { Origin, ProbeResult } from '$lib/media/types';
@@ -46,7 +47,7 @@ export type HostRoomOptions = {
 	 */
 	code: string;
 	/** Called when the origin is ready and the host can start playing locally. */
-	onSource: (o: { objectUrl: string | null; origin: Origin }) => void;
+	onSource: (o: { objectUrl: string | null; origin: Origin; title: string }) => void;
 	onError: (err: Error) => void;
 	onGuests: (guests: { peerId: string; name: string }[]) => void;
 	onWaiting: (on: string[]) => void;
@@ -100,6 +101,12 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	let origin: Origin | null = null;
 	let objectUrl: string | null = null;
+	/**
+	 * The film's name, kept beside the origin it belongs to and read at send time
+	 * so a guest who arrives mid-film is told what it is, exactly like one who was
+	 * here when it went on. See film.ts.
+	 */
+	let title = '';
 	const guestNames = new Map<string, string>();
 
 	const mesh: Mesh = createMesh({
@@ -172,7 +179,12 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	const sendReady = (link: PeerLink) => {
 		if (!origin) return;
-		link.channels.sendControl({ t: 'ready', mpd: origin.mpd, duration: origin.durationSec });
+		link.channels.sendControl({
+			t: 'ready',
+			mpd: origin.mpd,
+			duration: origin.durationSec,
+			title
+		});
 		link.channels.sendControl({ t: 'rungs', available: origin.availableRungs() });
 		link.channels.sendControl(state.snapshot());
 	};
@@ -290,6 +302,11 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			throw new Error(reason);
 		}
 
+		// Past the rejection, so a file we would not play never renames the film
+		// that is on - the same rule `converting` follows on the page, and for the
+		// same reason: a rejected file displaced nothing.
+		title = filmTitle(file.name);
+
 		origin?.close();
 		if (objectUrl) URL.revokeObjectURL(objectUrl);
 		origin = await createOrigin(file, probe);
@@ -307,7 +324,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		});
 		stats.availableRungs = origin.availableRungs();
 
-		opts.onSource({ objectUrl, origin });
+		opts.onSource({ objectUrl, origin, title });
 		for (const link of net.links()) sendReady(link);
 		state.start();
 		return probe;
