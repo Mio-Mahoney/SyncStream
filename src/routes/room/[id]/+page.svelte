@@ -4,6 +4,7 @@
 	import { replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
+	import PlayerControls from '$lib/PlayerControls.svelte';
 	import { tierMessage } from '$lib/media/probe';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
@@ -11,7 +12,12 @@
 	import { strategyFromParams } from '$lib/rendezvous/room';
 	import { isValidRoomCode } from '$lib/rendezvous/codes';
 
-	let video: HTMLVideoElement;
+	// Reactive because the control bar takes it as a prop: bind:this only assigns
+	// after the first render, so a plain `let` would hand the bar a permanent
+	// undefined. Asserted non-null as everything that reads it runs after mount.
+	let video = $state<HTMLVideoElement>()!;
+	/** Fullscreened in place of the video, so the controls come along with it. */
+	let player = $state<HTMLElement>();
 
 	const code = $derived(page.params.id ?? '');
 	// The share link never carries `create`, so a guest opening it can never
@@ -163,16 +169,25 @@
 		else guest?.sendIntent(action, video.currentTime);
 	}
 
-	function seek(e: Event) {
-		const t = Number((e.target as HTMLInputElement).value);
+	function seek(t: number) {
 		if (host) host.state.applyIntent({ t: 'intent', action: 'seek', mediaTime: t });
 		else guest?.sendIntent('seek', t);
 	}
 
 	function onTimeUpdate() {
 		currentTime = video.currentTime;
-		duration = Number.isFinite(video.duration) ? video.duration : duration;
+		syncDuration();
 		syncPlayState();
+	}
+
+	/**
+	 * A guest is told the duration up front, but the host only ever had it from
+	 * timeupdate, which does not fire until playback starts. That left the host
+	 * staring at a 0:00 total and a seek bar pinned to max=0 - unable to scrub to
+	 * a starting point without first playing from the top.
+	 */
+	function syncDuration() {
+		if (Number.isFinite(video.duration) && video.duration > 0) duration = video.duration;
 	}
 
 	/**
@@ -262,41 +277,29 @@
 	{/if}
 
 	<div class="w-full max-w-5xl" class:hidden={!ready}>
-		<video
-			bind:this={video}
-			ontimeupdate={onTimeUpdate}
-			onplay={syncPlayState}
-			onpause={syncPlayState}
-			onended={syncPlayState}
-			class="w-full bg-black"
-			data-testid="video"
-			playsinline
-		></video>
+		<div bind:this={player} class="player overflow-hidden rounded bg-black">
+			<video
+				bind:this={video}
+				ontimeupdate={onTimeUpdate}
+				onloadedmetadata={syncDuration}
+				ondurationchange={syncDuration}
+				onplay={syncPlayState}
+				onpause={syncPlayState}
+				onended={syncPlayState}
+				class="w-full bg-black"
+				data-testid="video"
+				playsinline
+			></video>
 
-		<div class="mt-2 flex items-center gap-3">
-			<button
-				onclick={togglePlay}
-				class="rounded bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500"
-				data-testid="play">{playing ? 'Pause' : 'Play'}</button
-			>
-			<input
-				type="range"
-				min="0"
-				max={duration || 0}
-				step="0.1"
-				value={currentTime}
-				onchange={seek}
-				class="flex-1"
-				aria-label="Seek"
-				data-testid="seek"
+			<PlayerControls
+				{video}
+				container={player}
+				{playing}
+				{currentTime}
+				{duration}
+				onToggle={togglePlay}
+				onSeek={seek}
 			/>
-			<span class="font-mono text-sm tabular-nums">
-				{currentTime.toFixed(0)} / {duration.toFixed(0)}s
-			</span>
-			<button
-				onclick={() => video.requestFullscreen()}
-				class="rounded bg-[#B2BEB5] px-3 py-2 text-sm">Fullscreen</button
-			>
 		</div>
 
 		{#if waitingOn.length}
@@ -318,3 +321,22 @@
 		{/if}
 	</div>
 </main>
+
+<style>
+	/**
+	 * Fullscreen lands on the wrapper, not the video, so the controls come with
+	 * it. That makes the video responsible for yielding the bar its height rather
+	 * than running to the full viewport and pushing it off-screen.
+	 */
+	.player:fullscreen {
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+	}
+
+	.player:fullscreen video {
+		min-height: 0;
+		flex: 1;
+		object-fit: contain;
+	}
+</style>

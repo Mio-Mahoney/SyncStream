@@ -165,3 +165,60 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 		{ what: 'the guest to resume playing' }
 	);
 });
+
+/**
+ * The host learns the duration from the file it opened, and a guest is told it
+ * over the wire. Regression: the host only ever read it from `timeupdate`,
+ * which does not fire until playback starts, so the total showed 0:00 and the
+ * seek bar was pinned to max=0 -- the host could not scrub to a starting point
+ * without first playing from the top.
+ */
+test('the host can scrub before playing anything', async ({ page }) => {
+	await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible({ timeout: 45_000 });
+
+	await expect(page.getByTestId('duration')).toHaveText('1:00');
+	await expect(page.getByTestId('seek')).toHaveAttribute('max', '60');
+	await expect(page.getByTestId('seek')).toBeEnabled();
+
+	// Nothing has played, so this is a seek from a standing start.
+	expect(await videoTime(page)).toBe(0);
+	await page.getByTestId('seek').fill('30');
+	await page.getByTestId('seek').dispatchEvent('change');
+
+	await until(
+		() => videoTime(page),
+		(t) => t >= 29 && t <= 31,
+		{
+			what: 'the host to land on the scrubbed position without playing first'
+		}
+	);
+	await expect(page.getByTestId('elapsed')).toHaveText('0:30');
+});
+
+/** The video, not the button, is what a viewer is looking at. */
+test('keyboard shortcuts drive playback', async ({ page }) => {
+	await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible({ timeout: 45_000 });
+	const paused = () => page.evaluate(() => document.querySelector('video')!.paused);
+
+	await page.getByTestId('video').click();
+	await page.keyboard.press(' ');
+	await until(paused, (p) => !p, { what: 'space to start playback' });
+
+	await page.keyboard.press(' ');
+	await until(paused, (p) => p, { what: 'space to pause again' });
+
+	const before = await videoTime(page);
+	await page.keyboard.press('ArrowRight');
+	await until(
+		() => videoTime(page),
+		(t) => t >= before + 4,
+		{
+			what: 'ArrowRight to skip forward'
+		}
+	);
+
+	await page.keyboard.press('m');
+	expect(await page.evaluate(() => document.querySelector('video')!.muted)).toBe(true);
+});
