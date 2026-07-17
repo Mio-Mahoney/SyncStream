@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { nameYourself, openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
+import { appPath } from './base';
 
 /**
  * The guest's screen before there is a video on it.
@@ -12,7 +13,7 @@ import { nameYourself, openGuest, openHost, openRoom, snapshot, until, videoTime
 test('a guest whose room has no host is told so, and given a way out', async ({ page }) => {
 	// Nobody is hosting this. Rendezvous walks its whole ladder before saying
 	// so, which is where the 20s-per-strategy budget goes.
-	await page.goto('/room/K7M4PQ');
+	await page.goto(appPath('/room/K7M4PQ'));
 
 	const waiting = page.getByTestId('waiting-room');
 	await expect(waiting).toHaveAttribute('data-phase', 'searching');
@@ -31,7 +32,7 @@ test('a link with a broken code says so, rather than searching for it', async ({
 	// A link cut short by a chat client. The whole of this state used to be the
 	// banner 'That is not a valid room code.' under a header announcing 'Room
 	// badcode-nonsense' in the same type as a real code, with nothing to click.
-	await page.goto('/room/badcode-nonsense');
+	await page.goto(appPath('/room/badcode-nonsense'));
 
 	const waiting = page.getByTestId('waiting-room');
 	await expect(waiting).toHaveAttribute('data-phase', 'invalid');
@@ -50,7 +51,7 @@ test('a link with a broken code says so, rather than searching for it', async ({
 test('a broken code is a dead end for a would-be host too', async ({ page }) => {
 	// `?create=1` is the host's own URL. A code that cannot name a room leaves
 	// nothing to host either, so this must not fall through to the picker.
-	await page.goto('/room/badcode-nonsense?create=1');
+	await page.goto(appPath('/room/badcode-nonsense?create=1'));
 
 	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'invalid');
 	await expect(page.getByTestId('file-picker')).toHaveCount(0);
@@ -58,7 +59,7 @@ test('a broken code is a dead end for a would-be host too', async ({ page }) => 
 });
 
 test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
-	await page.goto('/room/K7M4PQ');
+	await page.goto(appPath('/room/K7M4PQ'));
 	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'failed', {
 		timeout: 60_000
 	});
@@ -75,7 +76,7 @@ test('a host whose room will not open is told so, and given a way out', async ({
 	// the same RendezvousError a guest's failed join does -- which the page used
 	// to route, for a host only, straight into the raw error banner.
 	await page.routeWebSocket(/.*/, (ws) => ws.close());
-	await page.goto('/?debug=1');
+	await page.goto(appPath('/?debug=1'));
 	await page.getByText('Create room').click();
 
 	const waiting = page.getByTestId('waiting-room');
@@ -128,7 +129,7 @@ test('a host waiting for their room to open is told so, and shown no code yet', 
 			);
 		}, 20);
 	});
-	await page.goto('/');
+	await page.goto(appPath('/'));
 	await page.getByText('Create room').click();
 
 	// Then the room is real, and so is the code.

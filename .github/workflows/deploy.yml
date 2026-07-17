@@ -1,0 +1,60 @@
+# Publishes the static build to GitHub Pages (PLAN.md 4.7: the app is static
+# files, so hosting it costs nothing and runs no server of ours).
+#
+# BASE_PATH is the load-bearing setting. A Pages *project* site serves under
+# /<repo>/, and SvelteKit has to build with that prefix or every asset 404s.
+# Point a custom domain here later and this becomes an empty string, with no
+# code change: see svelte.config.js.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # So a deploy can be re-run without an empty commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Both are required by actions/deploy-pages: `pages` to publish, `id-token` to
+  # prove the artifact came from this workflow.
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it: a half-published site is
+# worse than a slightly stale one. Queued runs collapse to the newest.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build
+        env:
+          # Must match the repo name exactly; it is the URL prefix Pages serves
+          # this site under.
+          BASE_PATH: /${{ github.event.repository.name }}
+        run: bun run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

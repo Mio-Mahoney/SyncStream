@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { BASE } from './tests/e2e/base';
 
 /**
  * PLAN.md 8.
@@ -32,6 +33,10 @@ export default defineConfig({
 	reporter: process.env.CI ? [['github'], ['list']] : [['list']],
 
 	use: {
+		// Origin only. The base path is NOT folded in here: Playwright resolves a
+		// goto() against this with `new URL()`, and a leading-slash path replaces
+		// the whole path rather than appending to it, silently dropping the prefix.
+		// Tests build paths with `appPath()` instead, which is explicit.
 		baseURL: 'http://localhost:4173',
 		trace: 'retain-on-failure',
 		video: 'off',
@@ -76,6 +81,9 @@ export default defineConfig({
 		command: 'bun run build && bun run preview --port 4173 --strictPort',
 		port: 4173,
 		reuseExistingServer: !process.env.CI,
-		timeout: 180_000
+		timeout: 180_000,
+		// The build and the tests must agree on the base path, or the suite
+		// navigates to paths the server does not serve.
+		env: { BASE_PATH: BASE }
 	}
 });

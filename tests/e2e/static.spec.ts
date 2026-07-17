@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { appPath } from './base';
 
 const build = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'build');
 
@@ -52,7 +53,24 @@ test('the app loads with no backend process answering anything but static files'
 		if (u.pathname.startsWith('/api/')) nonStatic.push(`api ${u.pathname}`);
 	});
 
-	await page.goto('/');
+	await page.goto(appPath('/'));
 	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
 	expect(nonStatic, 'the app talked to a backend').toEqual([]);
+});
+
+/**
+ * GitHub Pages has no rewrite rules: an unmatched path serves 404.html or
+ * nothing, and Jekyll strips underscore-prefixed directories -- which is every
+ * asset SvelteKit builds, all of them under _app/. Both failures are invisible
+ * locally (vite preview rewrites happily, and runs no Jekyll) and produce a
+ * blank page on the deployed site, so they are asserted against the build tree
+ * rather than discovered after a push.
+ */
+test('the build carries what a rewrite-less static host needs', () => {
+	const files = walk(build);
+	expect(files, 'GitHub Pages serves 404.html for unmatched paths').toContain('404.html');
+	expect(files, 'without .nojekyll, Pages strips the whole _app/ tree').toContain('.nojekyll');
+	// Same shell, or a room link boots a different bundle than the landing page.
+	const shell = readFileSync(join(build, 'index.html'), 'utf8');
+	expect(readFileSync(join(build, '404.html'), 'utf8')).toBe(shell);
 });

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { nameYourself, openGuest, openHost, openRoom, snapshot, until } from './helpers';
+import { appPath } from './base';
 
 /**
  * Nobody in this watch party had a name.
@@ -147,7 +148,7 @@ test('a name off the wire cannot wreck the room it lands in', async ({ page, con
 			return (send as (d: unknown) => void).call(this, data);
 		};
 	});
-	await guest.goto(`/room/${code}?debug=1`);
+	await guest.goto(appPath(`/room/${code}?debug=1`));
 
 	await until(
 		() => snapshot(page),

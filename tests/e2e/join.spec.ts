@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { appPath } from './base';
 
 /**
  * The landing page is the only way into a room, and what a guest has been handed
@@ -8,11 +9,11 @@ import { expect, test } from '@playwright/test';
 const CODE = 'K7M4PQ';
 
 test('pasting the invite link the host copied joins that room', async ({ page, baseURL }) => {
-	await page.goto('/');
+	await page.goto(appPath('/'));
 	const input = page.getByLabel('Room code');
 
 	// Exactly what lands on the clipboard from the room header's copy button.
-	await input.fill(`${baseURL}/room/${CODE}`);
+	await input.fill(`${baseURL}${appPath(`/room/${CODE}`)}`);
 
 	// It used to keep the first six alphabet characters of the URL -- 'HTTPLC',
 	// a valid-looking code for a room that does not exist, which the guest then
@@ -24,7 +25,7 @@ test('pasting the invite link the host copied joins that room', async ({ page, b
 });
 
 test('a link with no room code in it says so instead of inventing one', async ({ page }) => {
-	await page.goto('/');
+	await page.goto(appPath('/'));
 	const input = page.getByLabel('Room code');
 
 	await input.fill('https://example.com/watch/tonight');
@@ -35,7 +36,7 @@ test('a link with no room code in it says so instead of inventing one', async ({
 });
 
 test('a code typed with stray punctuation and case is still accepted', async ({ page }) => {
-	await page.goto('/');
+	await page.goto(appPath('/'));
 	const input = page.getByLabel('Room code');
 
 	await input.fill('k7 m4-pq');
