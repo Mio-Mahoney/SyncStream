@@ -119,3 +119,22 @@ export async function openGuest(ctx: BrowserContext, code: string) {
 	await page.goto(`/room/${code}?debug=1`);
 	return { page, errors };
 }
+
+/**
+ * Says who you are through the room's own name tag. Shared because naming a
+ * peer is setup for any test whose claim is about the room's people: two
+ * machine-generated names differing only in three digits make an assertion
+ * about *which* person hard to trust.
+ */
+export async function nameYourself(page: Page, testid: string, name: string) {
+	// The control is the fix. On unfixed source there is nothing to click, and
+	// the room has no way at all to be told who is in it.
+	await expect(
+		page.getByTestId(`${testid}-edit`),
+		'the room must let you say who you are'
+	).toBeVisible({ timeout: 45_000 });
+	await page.getByTestId(`${testid}-edit`).click();
+	await page.getByTestId(`${testid}-field`).fill(name);
+	await page.getByTestId(`${testid}-save`).click();
+	await expect(page.getByTestId(`${testid}-name`)).toHaveText(name);
+}

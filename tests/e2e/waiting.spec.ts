@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
+import { nameYourself, openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
 
 /**
  * The guest's screen before there is a video on it.
@@ -260,4 +260,51 @@ test('a guest watching fullscreen is let out of it when the room ends', async ({
 	// control lives.
 	await expect(guest.getByTestId('waiting-title')).toBeVisible();
 	await expect(guest.getByRole('link', { name: 'Back to start' })).toBeVisible();
+});
+
+test('a guest waiting for the host is told who else is waiting', async ({ page, context }) => {
+	const { code } = await openRoom(page);
+
+	// Deliberately named, and deliberately not left as "Guest 284": the claim is
+	// that a guest reads the OTHER guest, and two machine-generated names that
+	// differ only in three digits make a passing assertion hard to trust.
+	const alice = await openGuest(context, code);
+	await nameYourself(alice.page, 'guest-name', 'Alice');
+
+	// Alone with the host so far. Silence rather than "no one else is here": that
+	// is news a host needs (their link may not have worked) and nothing a guest
+	// who arrived first can act on.
+	await expect(
+		alice.page.getByTestId('waiting-others'),
+		'a guest waiting alone is not told the room is empty'
+	).toHaveCount(0);
+
+	const bob = await openGuest(context, code);
+	await nameYourself(bob.page, 'guest-name', 'Bob');
+
+	// Regression, and the whole claim: the host has read this same roster by name
+	// since the invite panel, while a guest sitting beside those very people had a
+	// screen naming only the host. Asserted against the whole card so an unfixed
+	// build fails printing what a guest actually read.
+	const waitingRoom = (p: typeof alice.page) => p.getByTestId('waiting-room');
+	await expect(
+		waitingRoom(alice.page),
+		'a guest must be told who else is waiting with them'
+	).toContainText('Bob is waiting too.', { timeout: 45_000 });
+	await expect(waitingRoom(bob.page)).toContainText('Alice is waiting too.', { timeout: 45_000 });
+
+	// The two ways the line could go wrong, and both are silent. A guest is never
+	// told which name is its own, so its own name here reads as one more stranger;
+	// and the host is named on the line above, so naming them again reads as two
+	// people in a two-person room.
+	await expect(alice.page.getByTestId('waiting-others')).not.toContainText('Alice');
+	await expect(bob.page.getByTestId('waiting-others')).not.toContainText('Bob');
+	for (const g of [alice, bob]) {
+		await expect(g.page.getByTestId('waiting-others')).not.toContainText('Host');
+		// Still the wait it always was -- the roster is a fact added to this screen,
+		// not a replacement for the one thing that proves the code was right.
+		await expect(g.page.getByTestId('waiting-room')).toContainText('Connected to Host.');
+	}
+
+	expect(alice.errors.concat(bob.errors), 'guest page errors').toEqual([]);
 });

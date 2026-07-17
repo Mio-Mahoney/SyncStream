@@ -28,3 +28,22 @@ export function watching(names: readonly string[]): string {
 	if (names.length === 0) return '';
 	return `Watching with ${nameList(names)}.`;
 }
+
+/**
+ * The same roster again, on the screen before the film - the other guests who
+ * are also sitting here waiting for the host to pick something.
+ *
+ * A third sentence and not `watching()`, because nobody is watching anything
+ * yet: the whole premise of the screen it lands on is that there is no film.
+ * The host is left out - the line above it already says who we are connected to,
+ * and naming them twice reads as two people.
+ *
+ * Silent when there is no one, like `watching()` and unlike `presence()`. "No
+ * one else is here" is news to a host, whose link may not have worked; to a
+ * guest who has arrived first it is a sentence that appears, says nothing they
+ * can act on, and then goes away again as the room fills.
+ */
+export function alsoHere(names: readonly string[]): string {
+	if (names.length === 0) return '';
+	return `${nameList(names)} ${names.length === 1 ? 'is' : 'are'} waiting too.`;
+}

@@ -81,11 +81,16 @@
 	let waitingOnYou = $state(false);
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	/**
-	 * A guest's read of the same roster, as the host states it: the host, then
-	 * every other guest. Kept apart from `guests`, which is the host's own view
-	 * and never contains a host.
+	 * A guest's read of the same roster, as the host states it. Kept apart from
+	 * `guests`, which is the host's own view and never contains a host.
+	 *
+	 * The host stays its own field rather than heading a flat list, because the
+	 * two screens that read this want different halves: under the player it is one
+	 * room, and in the waiting room the host is already named a line above.
 	 */
-	let company = $state<string[]>([]);
+	let company = $state<{ host: string; guests: string[] }>({ host: '', guests: [] });
+	/** The room as a guest watching it reads it: the host, then everyone else. */
+	const room = $derived([company.host, ...company.guests].filter(Boolean));
 	let ready = $state(false);
 	/** Set once the host says hello. Empty means we are still searching. */
 	let hostName = $state('');
@@ -332,7 +337,7 @@
 				started = false;
 			},
 			onHostName: (n) => (hostName = n),
-			onCompany: (p) => (company = p),
+			onCompany: (r) => (company = r),
 			onUnplayable: (reason) => (unplayable = reason),
 			onWaiting: (on, you) => {
 				waitingOn = on;
@@ -588,6 +593,7 @@
 			{hostName}
 			attempts={rendezvousFailure?.attempts ?? []}
 			reason={unplayable}
+			others={company.guests}
 			onRetry={retryRendezvous}
 			{name}
 			onRename={isHost ? undefined : rename}
@@ -700,7 +706,7 @@
 			-->
 			<NowPlaying title={film} testid="guest-now-playing" />
 			<div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-				<Presence names={company} reader="guest" testid="company" />
+				<Presence names={room} reader="guest" testid="company" />
 				<NameTag {name} onRename={rename} testid="guest-name" />
 			</div>
 		{/if}

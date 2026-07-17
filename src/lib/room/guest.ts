@@ -77,8 +77,13 @@ export type GuestRoomOptions = {
 	 * guests opportunistically, so our peer list is who we happen to be meshed
 	 * with, which is a permanent undercount of the room (see `Roster` in
 	 * protocol/control).
+	 *
+	 * `host` and `guests` stay apart because the screens that read this ask
+	 * different questions of it: under the player it is one room ("Watching with
+	 * Alice and Bob"), while the waiting room has already named the host on the
+	 * line above and is asking who *else* turned up.
 	 */
-	onCompany: (people: string[]) => void;
+	onCompany: (room: { host: string; guests: string[] }) => void;
 	onUnplayable: (reason: string) => void;
 	/**
 	 * Who the room is being held for. `on` names the other guests; `you` says
@@ -341,7 +346,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 
 			case 'roster':
-				if (fromHost) opts.onCompany(msg.people);
+				if (fromHost) opts.onCompany({ host: msg.host, guests: msg.guests });
 				break;
 
 			case 'pong':

@@ -121,11 +121,17 @@ export type Waiting = { t: 'waiting'; on: string[]; you: boolean };
  * Every guest is connected to the host by definition, which is what makes the
  * host the one honest source.
  *
- * Sent per link and not broadcast, for the reason `Waiting` is: `people`
+ * Sent per link and not broadcast, for the reason `Waiting` is: `guests`
  * excludes the recipient, because a guest is never told which name is theirs
  * and would read their own name as a stranger's.
+ *
+ * The host is its own field rather than the first of a flat list. A receiver
+ * asks two different questions of this - who is in the room (host included) and
+ * who else is *waiting* alongside me (host excluded, since the screen that asks
+ * has already named them) - and the second is unanswerable from a list whose
+ * host is identified only by position.
  */
-export type Roster = { t: 'roster'; people: string[] };
+export type Roster = { t: 'roster'; host: string; guests: string[] };
 
 /**
  * Which rungs are warm enough to select (PLAN.md 4.2, 4.5).

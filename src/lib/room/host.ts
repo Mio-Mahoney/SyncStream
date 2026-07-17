@@ -172,7 +172,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		for (const link of net.links()) {
 			link.channels.sendControl({
 				t: 'roster',
-				people: [name, ...[...guestNames].filter(([id]) => id !== link.peerId).map(([, n]) => n)]
+				host: name,
+				guests: [...guestNames].filter(([id]) => id !== link.peerId).map(([, n]) => n)
 			});
 		}
 	};

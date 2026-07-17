@@ -9,11 +9,12 @@
 	 *
 	 * `reader` is which end of the room is reading, and it picks the sentence
 	 * rather than the caller doing it: the same roster means "your link worked"
-	 * to a host and "these are the people you came for" to a guest, and a
-	 * sentence written for one of them is not safe in front of the other.
+	 * to a host, "these are the people you came for" to a guest watching, and
+	 * "you are not the only one waiting" to a guest who is early - and a sentence
+	 * written for one of them is not safe in front of the others.
 	 */
 
-	import { presence, watching } from '$lib/invite';
+	import { alsoHere, presence, watching } from '$lib/invite';
 
 	let {
 		names,
@@ -23,10 +24,12 @@
 		/** Everyone in the room but the reader, by name. */
 		names: readonly string[];
 		testid: string;
-		reader?: 'host' | 'guest';
+		reader?: 'host' | 'guest' | 'guest-waiting';
 	} = $props();
 
-	const here = $derived(reader === 'host' ? presence(names) : watching(names));
+	const here = $derived(
+		reader === 'host' ? presence(names) : reader === 'guest' ? watching(names) : alsoHere(names)
+	);
 </script>
 
 {#if here}

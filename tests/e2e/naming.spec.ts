@@ -1,5 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-import { openGuest, openHost, openRoom } from './helpers';
+import { expect, test } from '@playwright/test';
+import { nameYourself, openGuest, openHost, openRoom } from './helpers';
 
 /**
  * Nobody in this watch party had a name.
@@ -15,19 +15,6 @@ import { openGuest, openHost, openRoom } from './helpers';
  * the host's presence line before anything could have asked them. That is what
  * the `rename` message is for, and it is what these tests are mostly about.
  */
-
-const nameYourself = async (page: Page, testid: string, name: string) => {
-	// The control is the fix. On unfixed source there is nothing to click, and
-	// the room has no way at all to be told who is in it.
-	await expect(
-		page.getByTestId(`${testid}-edit`),
-		'the room must let you say who you are'
-	).toBeVisible({ timeout: 45_000 });
-	await page.getByTestId(`${testid}-edit`).click();
-	await page.getByTestId(`${testid}-field`).fill(name);
-	await page.getByTestId(`${testid}-save`).click();
-	await expect(page.getByTestId(`${testid}-name`)).toHaveText(name);
-};
 
 test('a guest says who it is, and the room stops calling it a number', async ({
 	page,

@@ -2,6 +2,7 @@
 	import { resolve } from '$app/paths';
 	import { CODE_LENGTH } from '$lib/rendezvous/codes';
 	import NameTag from '$lib/NameTag.svelte';
+	import Presence from '$lib/Presence.svelte';
 
 	/**
 	 * The screen for a room with no video on it - mostly a guest's, and every
@@ -36,6 +37,7 @@
 		attempts = [] as readonly string[],
 		/** The host's probe verdict, for a `rejected` phase. */
 		reason = '',
+		others = [] as readonly string[],
 		onRetry,
 		name = '',
 		onRename
@@ -45,6 +47,12 @@
 		hostName?: string;
 		attempts?: readonly string[];
 		reason?: string;
+		/**
+		 * The other guests waiting alongside the reader, by name - the host and the
+		 * reader both excluded. Only the host can say (see `Roster` in
+		 * protocol/control), and only on the phases where there is a room to be in.
+		 */
+		others?: readonly string[];
 		onRetry: () => void;
 		/** What the room calls the reader; omitted where there is no room. */
 		name?: string;
@@ -65,6 +73,19 @@
 	const canBeNamed = $derived(
 		!!onRename && (phase === 'searching' || phase === 'found' || phase === 'rejected')
 	);
+
+	/**
+	 * Only the two phases where the reader is actually in a room with other
+	 * people in it. `searching` has not found the host yet, so there is no roster
+	 * to have been told; the dead ends have no room left to report on.
+	 *
+	 * The host has read this same fact by name since the invite panel - "Guest 640
+	 * and Guest 528 are here" - while a guest waiting beside those very people had
+	 * a screen that mentioned only the host. It is the half of the room the guest
+	 * came for, and the wait is when it matters most: it is the difference between
+	 * a party assembling and sitting alone wondering whether to bother.
+	 */
+	const showOthers = $derived((phase === 'found' || phase === 'rejected') && others.length > 0);
 </script>
 
 <section
@@ -181,6 +202,17 @@
 			The host closed the room. The video was streaming from their computer, so there is nothing
 			left to play.
 		</p>
+	{/if}
+
+	<!--
+		Under the copy that names the host, not folded into it: "Connected to Alice"
+		is what proves the code was right, and this is a separate fact that arrives
+		on its own clock as people turn up.
+	-->
+	{#if showOthers}
+		<div class="mt-3 flex justify-center">
+			<Presence names={others} reader="guest-waiting" testid="waiting-others" />
+		</div>
 	{/if}
 
 	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
