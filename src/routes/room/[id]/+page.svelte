@@ -23,6 +23,8 @@
 	let video = $state<HTMLVideoElement>()!;
 	/** Fullscreened in place of the video, so the controls come along with it. */
 	let player = $state<HTMLElement>();
+	/** The picker that opens under a playing film. Below the fold where it mounts. */
+	let changePicker = $state<HTMLElement>();
 
 	const code = $derived(page.params.id ?? '');
 	// The share link never carries `create`, so a guest opening it can never
@@ -420,6 +422,28 @@
 		// is the state we wanted anyway.
 		void document.exitFullscreen().catch(() => {});
 	});
+
+	/**
+	 * The picker opens under the film, and a film fills the window - so it mounts
+	 * below the fold. Measured on a 1280x720 laptop viewport, its top landed at
+	 * y=744: the host clicked the one control for changing the film, the button
+	 * relabelled itself to "Keep this video", and nothing else on screen moved.
+	 * The picker they had just asked for was never in view, so the click read as
+	 * dead and the way off a wrong film stayed as hidden as before it existed.
+	 *
+	 * `block: 'nearest'` scrolls the least that brings it in, which keeps the film
+	 * everyone is still watching on screen above it - the reason the picker opens
+	 * below the player rather than in place of it. Smooth unless the reader asked
+	 * for less motion: the film stays put and only the page moves, so the scroll
+	 * is what shows the picker came from below rather than replacing something.
+	 */
+	$effect(() => {
+		if (!changing || !changePicker) return;
+		changePicker.scrollIntoView({
+			block: 'nearest',
+			behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+		});
+	});
 </script>
 
 <svelte:head>
@@ -585,7 +609,7 @@
 		the picker surviving a rejection.
 	-->
 	{#if isHost && ready && changing}
-		<div class="mt-6 flex w-full flex-col items-center">
+		<div bind:this={changePicker} class="mt-6 flex w-full flex-col items-center">
 			<FilePicker
 				{onFile}
 				onReject={(reason) => (unplayable = reason)}

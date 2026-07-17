@@ -75,7 +75,8 @@ test('a file rejected mid-film is explained at the picker, not off screen', asyn
 	const picker = page.getByTestId('file-picker');
 	await expect(picker).toBeVisible();
 
-	// The picker opens below the player, so a real host scrolls to it to use it.
+	// Opening it scrolls it into view; this only guards against that regressing
+	// into a measurement of a picker nobody could see anyway.
 	await picker.scrollIntoViewIfNeeded();
 	await dropFile(page, { name: 'notes.txt', type: 'text/plain' });
 
@@ -102,5 +103,56 @@ test('a file rejected mid-film is explained at the picker, not off screen', asyn
 	await expect(picker).toBeHidden();
 	await page.getByTestId('change-video').click();
 	await expect(page.getByTestId('unplayable')).toBeHidden();
+	expect(errors, 'host page errors').toEqual([]);
+});
+
+/**
+ * The picker opens under the film, and a film fills the window, so it mounts
+ * below the fold. Measured on unfixed source at this exact viewport: the picker's
+ * top landed at y=744 in a 720px window. The host clicked the only control that
+ * gets them off a wrong film, the button relabelled itself, and nothing else on
+ * screen moved - so the click read as dead and the picker they had just asked for
+ * was as hidden as it was before the control existed.
+ */
+test('asking to change the film brings the picker into view', async ({ page }) => {
+	// The defect is a relationship between the player's height and the window's,
+	// so the window is part of the test rather than a default it inherits.
+	await page.setViewportSize({ width: 1280, height: 720 });
+	const { errors } = await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible();
+
+	await page.getByTestId('change-video').click();
+	await expect(page.getByTestId('file-picker')).toBeVisible();
+
+	// The scroll is smooth, so where the page ends up is not knowable from the
+	// click returning. Poll for it landing rather than sampling once.
+	const rects = () =>
+		page.evaluate(() => {
+			const p = document.querySelector('[data-testid="file-picker"]')!.getBoundingClientRect();
+			const v = document.querySelector('[data-testid="video"]')!.getBoundingClientRect();
+			return {
+				pickerTop: Math.round(p.top),
+				pickerBottom: Math.round(p.bottom),
+				filmBottom: Math.round(v.bottom),
+				windowHeight: window.innerHeight
+			};
+		});
+	const seen = await until(rects, (m) => m.pickerBottom <= m.windowHeight, {
+		what: 'the picker to be scrolled into view',
+		timeout: 10_000
+	});
+
+	expect(
+		seen.pickerTop,
+		'the picker the host just asked for must be on screen'
+	).toBeGreaterThanOrEqual(0);
+	expect(
+		seen.pickerBottom,
+		'all of it, including the box a file is dropped on'
+	).toBeLessThanOrEqual(seen.windowHeight);
+	// The reason it opens below the player rather than in place of it: the film
+	// everyone else is still watching must survive the host considering a
+	// replacement. Scrolling it off screen to reach the picker would undo that.
+	expect(seen.filmBottom, 'the film must still be on screen above it').toBeGreaterThan(0);
 	expect(errors, 'host page errors').toEqual([]);
 });
