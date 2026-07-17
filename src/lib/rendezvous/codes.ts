@@ -52,3 +52,36 @@ export function normalizeRoomCode(input: string): string {
 	}
 	return out;
 }
+
+/** Anything that looks like a URL or a path, rather than a typed code. */
+const LOOKS_LIKE_LINK = /^\w+:\/\/|\/room\//i;
+const ROOM_PATH = /\/room\/([^/?#]+)/i;
+
+export function looksLikeLink(input: string): boolean {
+	return LOOKS_LIKE_LINK.test(input.trim());
+}
+
+/**
+ * Pulls the code out of an invite link.
+ *
+ * What the host copies is a URL, so pasting that URL into a box labelled for a
+ * code is the obvious thing to do -- and running it through `normalizeRoomCode`
+ * turns `.../room/K7M4PQ` into `HTTPLC`, which is six characters of the
+ * alphabet and therefore *valid*. The guest gets no error, just an empty room
+ * they wait in forever. Read the link instead of mangling it.
+ *
+ * Only the code is taken. A link carrying `?create=1` cannot make a paster into
+ * a host racing the real one for the same code.
+ */
+export function roomCodeFromLink(input: string): string | null {
+	const match = ROOM_PATH.exec(input.trim());
+	if (!match) return null;
+	let path: string;
+	try {
+		path = decodeURIComponent(match[1]);
+	} catch {
+		return null; // A malformed %-escape is not a code.
+	}
+	const code = normalizeRoomCode(path);
+	return isValidRoomCode(code) && code.length === path.length ? code : null;
+}

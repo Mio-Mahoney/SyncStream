@@ -4,7 +4,9 @@
 	import {
 		generateRoomCode,
 		isValidRoomCode,
+		looksLikeLink,
 		normalizeRoomCode,
+		roomCodeFromLink,
 		CODE_LENGTH
 	} from '$lib/rendezvous/codes';
 
@@ -34,9 +36,26 @@
 		goto(`${path}?create=1`);
 	}
 
+	/**
+	 * What the host shares is a link, so a link is what lands in this box. Read
+	 * the code out of it rather than letting `normalizeRoomCode` shred the URL
+	 * into six alphabet characters that pass validation and lead nowhere.
+	 */
 	function onInput() {
-		roomCode = normalizeRoomCode(roomCode);
 		error = '';
+		if (looksLikeLink(roomCode)) {
+			const fromLink = roomCodeFromLink(roomCode);
+			if (fromLink) {
+				roomCode = fromLink;
+				return;
+			}
+			// Better to say so than to silently keep the salvageable-looking
+			// letters and send them into an empty room.
+			roomCode = '';
+			error = 'That link has no room code in it. Check you copied the whole thing.';
+			return;
+		}
+		roomCode = normalizeRoomCode(roomCode);
 	}
 </script>
 
@@ -48,37 +67,69 @@
 	/>
 </svelte:head>
 
-<main class="w-screen h-screen font-sans flex flex-col items-center justify-center px-6">
-	<h1 class="text-5xl mb-4 text-center">SyncStream</h1>
-	<p class="mb-16 text-center text-moonstone-800 max-w-md">
+<main class="flex min-h-screen flex-col items-center justify-center px-6 py-12 font-sans">
+	<h1 class="mb-3 text-center text-5xl">SyncStream</h1>
+	<p class="mb-10 max-w-md text-center text-moonstone-800">
 		Play a video off your own disk and watch it together, in sync. Nothing uploads anywhere.
 	</p>
 
-	<div class="grid grid-cols-2 gap-5 w-fit">
-		<input
-			bind:value={roomCode}
-			oninput={onInput}
-			onkeydown={(e) => e.key === 'Enter' && join()}
-			placeholder="Enter a code"
-			aria-label="Room code"
-			autocapitalize="characters"
-			autocomplete="off"
-			spellcheck="false"
-			class="bg-white/75 focus:placeholder-transparent outline-none focus:border-slate-500 focus:bg-white border-slate-400 border-2 col-span-2 h-[70px] text-[40px] text-center tracking-[0.2em] font-mono"
-		/>
-		<button
-			onclick={join}
-			disabled={!canJoin}
-			class="border px-4 text-xl rounded bg-moonstone-100 hover:bg-moonstone-200 transition active:bg-moonstone-300 p-2 disabled:opacity-40 disabled:hover:bg-moonstone-100"
-			>Join</button
-		>
-		<button
-			class="border rounded px-4 text-xl bg-tangerine-400 hover:bg-tangerine-500 transition active:bg-tangerine-600 p-2"
-			onclick={createRoom}>Create room</button
-		>
-	</div>
+	<div class="w-full max-w-sm">
+		<!--
+			Hosting is the action a first-time visitor is here for; joining needs a
+			code they can only have been given. They used to sit side by side at
+			equal weight under a code box that dominated the page, which read as
+			"enter a code" being the way in.
+		-->
+		<section class="rounded-xl border border-moonstone-200 bg-white/70 p-6 text-center">
+			<h2 class="text-lg font-medium">Start a watch party</h2>
+			<p class="mx-auto mt-1 mb-5 max-w-[16rem] text-sm text-moonstone-800">
+				Open a room, pick a video, and invite people with a link.
+			</p>
+			<button
+				class="w-full rounded border border-tangerine-600 bg-tangerine-400 px-4 py-3 text-xl transition hover:bg-tangerine-500 active:bg-tangerine-600"
+				onclick={createRoom}>Create room</button
+			>
+		</section>
 
-	{#if error}
-		<p class="mt-6 text-tangerine-800" role="alert">{error}</p>
-	{/if}
+		<div class="my-5 flex items-center gap-3 text-sm text-moonstone-700">
+			<span class="h-px flex-1 bg-moonstone-200"></span>
+			<span>or join one</span>
+			<span class="h-px flex-1 bg-moonstone-200"></span>
+		</div>
+
+		<section class="rounded-xl border border-moonstone-200 bg-white/70 p-6">
+			<label for="room-code" class="block text-center text-sm text-moonstone-800">
+				Enter the code, or paste the invite link
+			</label>
+			<input
+				id="room-code"
+				bind:value={roomCode}
+				oninput={onInput}
+				onkeydown={(e) => e.key === 'Enter' && join()}
+				placeholder={'·'.repeat(CODE_LENGTH)}
+				aria-label="Room code"
+				aria-invalid={error ? 'true' : undefined}
+				autocapitalize="characters"
+				autocomplete="off"
+				spellcheck="false"
+				class="mt-3 h-[64px] w-full rounded border-2 border-slate-400 bg-white/75 text-center font-mono text-[32px] tracking-[0.3em] outline-none focus:border-moonstone-500 focus:bg-white focus:placeholder-transparent"
+			/>
+			<!-- Belongs against the field it is about, not at the foot of the page. -->
+			{#if error}
+				<p
+					class="mt-2 text-center text-sm text-tangerine-800"
+					role="alert"
+					data-testid="join-error"
+				>
+					{error}
+				</p>
+			{/if}
+			<button
+				onclick={join}
+				disabled={!canJoin}
+				class="mt-3 w-full rounded border bg-moonstone-100 px-4 py-2 text-xl transition hover:bg-moonstone-200 active:bg-moonstone-300 disabled:opacity-40 disabled:hover:bg-moonstone-100"
+				>Join</button
+			>
+		</section>
+	</div>
 </main>
