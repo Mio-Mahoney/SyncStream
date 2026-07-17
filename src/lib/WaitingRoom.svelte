@@ -17,14 +17,15 @@
 	 * it is the same situation as `failed` - the film is not going to play, now
 	 * what?
 	 *
-	 * `unopened` is the only phase that is the host's alone. It is the same
-	 * rendezvous failure as `failed` read from the other end - the guest found
-	 * no room to join, the host opened none - and it lands here for the reason
-	 * `invalid` does: it is a dead end, and this is the screen that knows how to
-	 * end one.
+	 * `opening` and `unopened` are the host's alone, and they are one wait and
+	 * its failure: the announce going out, and the announce never landing.
+	 * `unopened` is also the same rendezvous failure as `failed` read from the
+	 * other end - the guest found no room to join, the host opened none - and it
+	 * lands here for the reason `invalid` does: it is a dead end, and this is the
+	 * screen that knows how to end one.
 	 */
 	export type Phase =
-		'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected' | 'unopened';
+		'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected' | 'opening' | 'unopened';
 
 	let {
 		phase,
@@ -50,7 +51,7 @@
 	data-testid="waiting-room"
 	data-phase={phase}
 >
-	{#if phase === 'searching' || phase === 'found' || phase === 'rejected'}
+	{#if phase === 'searching' || phase === 'found' || phase === 'rejected' || phase === 'opening'}
 		<!--
 			The spinner is the only thing on this screen that distinguishes "working
 			on it" from "hung". Rendezvous walks a ladder of public relays at ten
@@ -67,7 +68,28 @@
 		></div>
 	{/if}
 
-	{#if phase === 'searching'}
+	{#if phase === 'opening'}
+		<!--
+			The host's `searching`, and pointedly the one wait on this screen that
+			does NOT name the code. Every other phase leads with it; this one cannot,
+			because the code is not settled yet. We draw it ourselves and only find
+			out whether it is free by announcing it and seeing whether a rival host
+			answers - so until that check clears it is a guess, and a collision
+			replaces it with a different one.
+
+			That guess used to be the largest thing on screen, 2xl mono under a "Room"
+			label, over an otherwise empty page. Explaining where the code went is the
+			last line's job: a host who was looking at one and now is not would
+			otherwise assume this is broken.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">Opening your room</h2>
+		<p class="mx-auto mt-2 max-w-[18rem] text-sm text-moonstone-800">
+			Announcing it through a relay so your friends can find it. This usually takes a few seconds.
+		</p>
+		<p class="mx-auto mt-2 max-w-[18rem] text-sm text-moonstone-800">
+			Your room code and invite link appear as soon as it's live.
+		</p>
+	{:else if phase === 'searching'}
 		<h2 class="text-lg font-medium" data-testid="waiting-title">Looking for room {code}</h2>
 		<p class="mx-auto mt-2 max-w-[18rem] text-sm text-moonstone-800">
 			Finding the host through a relay. This usually takes a few seconds.

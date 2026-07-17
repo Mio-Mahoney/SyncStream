@@ -73,12 +73,21 @@
 	 */
 	const roomUnopened = $derived(isHost && rendezvousFailure !== null);
 	/**
-	 * Nothing joinable exists behind the code. The header renders it at 2xl mono
-	 * as an invitation to pass on, which in both of these states invites people
-	 * into a room that is not there: `invalid` never named one, `unopened` never
-	 * got one.
+	 * The code on screen names a room that exists and will keep existing under
+	 * that code. The header renders it at 2xl mono under a "Room" label, which is
+	 * an invitation to pass it on, so anything short of that is a trap:
+	 *
+	 * - `invalid` never named a room, `unopened` never got one.
+	 * - A host's code before `opened` is a guess. We draw it with no server to
+	 *   ask, and the only collision check available is to announce it and see
+	 *   whether a rival host answers (PLAN.md 4.7) - so for the ~3s that takes,
+	 *   the header was showing a code that could be, and on a collision demonstrably
+	 *   IS, someone else's live room. It was then swapped out silently.
+	 *
+	 * A guest's code needs no such gate: it was handed to them, it is the room
+	 * they are looking for either way, and nothing here can change it.
 	 */
-	const roomless = $derived(badCode || roomUnopened);
+	const codeNamesARoom = $derived(!badCode && !roomUnopened && (!isHost || opened));
 
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
@@ -107,13 +116,19 @@
 		// to host either, and whoever is holding the broken link needs the same
 		// way out regardless of which end of it they thought they were on.
 		if (badCode) return 'invalid';
-		// Also ahead of the host check, and the one phase that is the host's. A
-		// failed announce left them the raw relay log under a header naming the
-		// room it had just failed to open, with no control on the page at all.
+		// Also ahead of the host check. A failed announce left them the raw relay
+		// log under a header naming the room it had just failed to open, with no
+		// control on the page at all.
 		if (roomUnopened) return 'unopened';
-		// The host's own waits are the picker's to describe, and a hard error
-		// already has a banner that says more than a phase name could.
-		if (isHost || error) return null;
+		// A hard error already has a banner that says more than a phase name could.
+		if (error) return null;
+		// The host's wait, and the counterpart of the guest's `searching` above it:
+		// both are rendezvous taking its time, and both are a blank page until it
+		// answers. The host's was one line of grey text with no spinner - the one
+		// thing that tells "working on it" apart from "hung" - under a room code
+		// that was not theirs to show yet. Their remaining waits are the invite
+		// panel's and the picker's to describe, and those are real controls.
+		if (isHost) return opened ? null : 'opening';
 		if (rendezvousFailure) return 'failed';
 		// Outranks `ready`, since the host can also leave mid-film.
 		if (roomOver) return 'ended';
@@ -125,6 +140,21 @@
 		return hostName ? 'found' : 'searching';
 	}
 	const roomPhase = $derived(phaseFor());
+
+	/**
+	 * A tab title is a room code's other public face - it is what a host reads
+	 * back to a friend over the phone - so it is gated on the same fact the
+	 * header is, and says what is happening instead whenever the code cannot.
+	 */
+	const title = $derived(
+		badCode
+			? 'Not a room'
+			: roomUnopened
+				? "Couldn't open the room"
+				: codeNamesARoom
+					? `Room ${shownCode}`
+					: 'Opening your room'
+	);
 
 	onMount(() => {
 		debug = isDebug();
@@ -165,7 +195,9 @@
 	});
 
 	async function asHost(signal: AbortSignal) {
-		status = 'Opening the room...';
+		// The waiting room's `opening` phase speaks for this wait now, spinner and
+		// all; a line of grey text underneath it would only repeat it.
+		status = '';
 		host = await startHostRoom({
 			video,
 			name: 'Host',
@@ -319,10 +351,7 @@
 </script>
 
 <svelte:head>
-	<!-- A code names a room only once one exists, and in neither of these did. -->
-	<title
-		>{badCode ? 'Not a room' : roomUnopened ? "Couldn't open the room" : `Room ${shownCode}`} - SyncStream</title
-	>
+	<title>{title} - SyncStream</title>
 </svelte:head>
 
 {#if debug}
@@ -331,14 +360,16 @@
 
 <main class="flex min-h-screen flex-col items-center px-4 py-6 font-sans">
 	<!--
-		Withheld when there is no room behind the code. The header announced "Room
+		Withheld until the code names a room. The header announced "Room
 		badcode-nonsense" in the same 2xl mono as a real code, directly above a
 		banner saying that is not a room code - dressing the URL's garbage up as a
 		room and then denying it. A failed announce read even worse, because that
 		code looks entirely real: it invites a host to send "Room VUF48U" to their
-		friends, and nobody is listening on it.
+		friends, and nobody is listening on it. A host's code mid-announce is worse
+		still: it looks real because it nearly always becomes real, which is exactly
+		what makes the collision case - where it is a stranger's room - passable.
 	-->
-	{#if !roomless}
+	{#if codeNamesARoom}
 		<!--
 			Just the code. The invite now lives wherever the host's attention already
 			is - the panel before the film, the bar under the player during it -

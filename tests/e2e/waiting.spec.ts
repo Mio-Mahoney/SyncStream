@@ -100,6 +100,48 @@ test('a host whose room will not open is told so, and given a way out', async ({
 	await expect(page).toHaveURL(/\/$/);
 });
 
+test('a host waiting for their room to open is told so, and shown no code yet', async ({
+	page
+}) => {
+	// The invariant, watched rather than sampled: a code on screen is an
+	// invitation to pass on, and until the announce lands there is nothing behind
+	// it to join. Polled from before the page's own scripts run, so this covers
+	// every frame of the wait rather than whichever ones a check happens to land
+	// on -- the old bug showed the code from the very first render.
+	await page.addInitScript(() => {
+		(window as unknown as { __codeBeforeRoom: string[] }).__codeBeforeRoom = [];
+		setInterval(() => {
+			const code = document.querySelector('[data-testid=room-code]')?.textContent?.trim();
+			const open = document.querySelector('[data-testid=file-input]');
+			if (code && !open)
+				(window as unknown as { __codeBeforeRoom: string[] }).__codeBeforeRoom.push(code);
+		}, 20);
+	});
+	await page.goto('/');
+	await page.getByText('Create room').click();
+
+	// A relay round trip plus the occupancy probe: seconds, not a frame. The
+	// whole of it used to be 'Opening the room...' in grey, with no spinner --
+	// the one thing telling 'working on it' apart from 'hung'.
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'opening');
+	await expect(waiting.getByRole('status')).toBeVisible();
+	await expect(page).toHaveTitle(/Opening your room/);
+
+	// Then the room is real, and so is the code.
+	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
+	await expect(page.getByTestId('room-code')).toBeVisible();
+	await expect(waiting).toHaveCount(0);
+
+	// We draw the code ourselves and only learn whether it is free by announcing
+	// it and seeing whether a rival host answers, so before that it is a guess --
+	// and on a collision it is a stranger's live room, swapped out silently once
+	// the probe clears.
+	expect(
+		await page.evaluate(() => (window as { __codeBeforeRoom?: string[] }).__codeBeforeRoom)
+	).toEqual([]);
+});
+
 test('a guest who arrives before the host picks a file knows it is connected', async ({
 	page,
 	context
