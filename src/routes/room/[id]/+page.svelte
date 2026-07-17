@@ -4,6 +4,7 @@
 	import { replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
+	import FilePicker from '$lib/FilePicker.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
 	import { tierMessage } from '$lib/media/probe';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
@@ -49,6 +50,8 @@
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	let ready = $state(false);
 	let copied = $state(false);
+	/** A file is being probed. Picking a second one now would race the first. */
+	let reading = $state(false);
 	let barrierEnabled = $state(true);
 	let debug = $state(false);
 
@@ -148,9 +151,9 @@
 		});
 	}
 
-	async function onFile(e: Event) {
-		const file = (e.target as HTMLInputElement).files?.[0];
-		if (!file || !host) return;
+	async function onFile(file: File) {
+		if (!host) return;
+		reading = true;
 		status = 'Reading the file...';
 		unplayable = '';
 		try {
@@ -159,6 +162,8 @@
 		} catch (err) {
 			unplayable = (err as Error).message;
 			status = '';
+		} finally {
+			reading = false;
 		}
 	}
 
@@ -260,20 +265,14 @@
 		<p class="mb-4 text-moonstone-800" data-testid="status">{status}</p>
 	{/if}
 
-	{#if isHost && opened && !ready && !unplayable}
-		<label
-			class="mb-4 cursor-pointer rounded border-2 border-dashed border-moonstone-400 px-8 py-10 text-center"
-		>
-			<input
-				type="file"
-				accept="video/*"
-				class="sr-only"
-				onchange={onFile}
-				data-testid="file-input"
-			/>
-			<span class="text-lg">Choose a video</span>
-			<span class="mt-1 block text-sm text-moonstone-800">It never leaves your machine.</span>
-		</label>
+	<!--
+		Deliberately still mounted once `unplayable` is set. A rejected file used
+		to take the picker down with it, so the host who dropped an .mkv read a
+		message telling them to remux it and had nothing left to drop the remux
+		onto short of reloading the page, which ends the room.
+	-->
+	{#if isHost && opened && !ready}
+		<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
 	{/if}
 
 	<div class="w-full max-w-5xl" class:hidden={!ready}>

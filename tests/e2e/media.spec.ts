@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
+import { fixture, openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
 
 /**
  * PLAN.md 4.3's tiering, against the real-world file shapes from Phase 0.
@@ -60,6 +60,32 @@ test('AC-3 audio is rejected with the real reason, not silently muted', async ({
 	await expect(page.getByTestId('unplayable')).toBeVisible();
 	const shown = (await page.getByTestId('unplayable').textContent())!.toLowerCase();
 	expect(shown, 'the message must name AC-3 rather than say "unsupported"').toContain('ac-3');
+});
+
+/**
+ * A rejection message that says "remux it to MP4 first" is worthless if there is
+ * nowhere left to put the remux. The picker used to unmount the moment a file
+ * was rejected, so the only way to try another one was to reload -- which, for
+ * a host, ends the room (PLAN.md Phase 1).
+ */
+test('a host can pick another file after one is rejected', async ({ page }) => {
+	const { errors } = await openHost(page, 'ac3-audio.mp4');
+
+	await expect(page.getByTestId('unplayable')).toBeVisible();
+	await expect(page.getByTestId('file-picker')).toBeVisible();
+
+	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
+
+	await until(
+		() => snapshot(page),
+		(s) => s.tier === 'direct',
+		{ what: 'the second file to probe as directly playable', timeout: 60_000 }
+	);
+	// The second file supersedes the first: the room plays, and the message about
+	// the rejected one is gone rather than sitting over a working player.
+	await expect(page.getByTestId('video')).toBeVisible();
+	await expect(page.getByTestId('unplayable')).toBeHidden();
+	expect(errors, 'host page errors').toEqual([]);
 });
 
 /**

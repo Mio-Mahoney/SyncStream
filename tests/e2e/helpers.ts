@@ -72,8 +72,8 @@ export const videoTime = (page: Page) =>
 		return v ? v.currentTime : -1;
 	});
 
-/** Opens a room as host and picks a fixture. */
-export async function openHost(page: Page, file: string) {
+/** Opens a room as host and stops at the picker, with no file chosen yet. */
+export async function openRoom(page: Page) {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 	await page.goto('/?debug=1');
@@ -85,9 +85,31 @@ export async function openHost(page: Page, file: string) {
 	// code before that risks reading one a collision is about to replace.
 	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
 	const code = (await page.getByTestId('room-code').textContent())!.trim();
-
-	await page.getByTestId('file-input').setInputFiles(fixture(file));
 	return { code, errors };
+}
+
+/** Opens a room as host and picks a fixture. */
+export async function openHost(page: Page, file: string) {
+	const opened = await openRoom(page);
+	await page.getByTestId('file-input').setInputFiles(fixture(file));
+	return opened;
+}
+
+/**
+ * Drags a file onto the page and drops it. Playwright has no drag-from-desktop
+ * API, so the DataTransfer is built in the page and handed to real events --
+ * which is also what makes this exercise the window-level listeners the picker
+ * actually relies on, rather than a synthetic call into the component.
+ */
+export async function dropFile(page: Page, file: { name: string; type: string; body?: string }) {
+	const dt = await page.evaluateHandle((f) => {
+		const dt = new DataTransfer();
+		dt.items.add(new File([f.body ?? 'not a video'], f.name, { type: f.type }));
+		return dt;
+	}, file);
+	await page.dispatchEvent('body', 'dragenter', { dataTransfer: dt });
+	await page.dispatchEvent('body', 'dragover', { dataTransfer: dt });
+	await page.dispatchEvent('body', 'drop', { dataTransfer: dt });
 }
 
 export async function openGuest(ctx: BrowserContext, code: string) {
