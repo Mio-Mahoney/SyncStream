@@ -58,10 +58,28 @@
 	let ready = $state(false);
 	/** Set once the host says hello. Empty means we are still searching. */
 	let hostName = $state('');
-	/** A guest's join that walked the whole ladder and found no host. */
-	let joinFailure = $state<RendezvousError | null>(null);
+	/**
+	 * Rendezvous walked the whole ladder and came back with nothing. One state
+	 * for both roles, because it is one failure: the guest found no room to join
+	 * and the host opened none. Only the sentence differs.
+	 */
+	let rendezvousFailure = $state<RendezvousError | null>(null);
 	/** The URL's code could not name a room, so nothing was ever attempted. */
 	let badCode = $state(false);
+	/**
+	 * The host's announce never landed, so `shownCode` names nothing. Kept apart
+	 * from the guest's read of the same failure: a guest's code was handed to
+	 * them and is worth re-checking, but this one we drew ourselves.
+	 */
+	const roomUnopened = $derived(isHost && rendezvousFailure !== null);
+	/**
+	 * Nothing joinable exists behind the code. The header renders it at 2xl mono
+	 * as an invitation to pass on, which in both of these states invites people
+	 * into a room that is not there: `invalid` never named one, `unopened` never
+	 * got one.
+	 */
+	const roomless = $derived(badCode || roomUnopened);
+
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
 	let reading = $state(false);
@@ -78,19 +96,25 @@
 	const name = `Guest ${Math.floor(Math.random() * 900 + 100)}`;
 
 	/**
-	 * Which wait a guest is in, or null when there is nothing to wait for. A
-	 * guest has no picker and no controls until the host sends a video, so
-	 * without this the whole page is one line of grey text.
+	 * Which wait this page is in, or null when there is nothing to wait for.
+	 * Mostly a guest's, who has no picker and no controls until the host sends a
+	 * video - without this the whole page is one line of grey text for them - but
+	 * the role-independent dead ends land here too, and so does the one the host
+	 * can reach before a room exists.
 	 */
 	function phaseFor(): Phase | null {
 		// Ahead of the host check: a code that cannot name a room leaves nothing
 		// to host either, and whoever is holding the broken link needs the same
 		// way out regardless of which end of it they thought they were on.
 		if (badCode) return 'invalid';
+		// Also ahead of the host check, and the one phase that is the host's. A
+		// failed announce left them the raw relay log under a header naming the
+		// room it had just failed to open, with no control on the page at all.
+		if (roomUnopened) return 'unopened';
 		// The host's own waits are the picker's to describe, and a hard error
 		// already has a banner that says more than a phase name could.
 		if (isHost || error) return null;
-		if (joinFailure) return 'failed';
+		if (rendezvousFailure) return 'failed';
 		// Outranks `ready`, since the host can also leave mid-film.
 		if (roomOver) return 'ended';
 		if (ready) return null;
@@ -100,7 +124,7 @@
 		if (unplayable) return 'rejected';
 		return hostName ? 'found' : 'searching';
 	}
-	const guestPhase = $derived(phaseFor());
+	const roomPhase = $derived(phaseFor());
 
 	onMount(() => {
 		debug = isDebug();
@@ -120,10 +144,16 @@
 		(isHost ? asHost(ac.signal) : asGuest(ac.signal)).catch((e: Error) => {
 			status = '';
 			// "room X was not reachable on any strategy tried (nostr: no host
-			// answered within 9813ms; ...)" is a true sentence that tells a guest
-			// nothing they can act on. The waiting room says what it means and
+			// answered within 9813ms; ...)" is a true sentence that tells nobody
+			// anything they can act on. The waiting room says what it means and
 			// offers a way out; the relay log survives behind a disclosure.
-			if (!isHost && e instanceof RendezvousError) joinFailure = e;
+			//
+			// Not gated on `!isHost` any more. That gate sent a host whose relays
+			// were down to the error banner - the exact raw diagnostic, minus even
+			// the guest's way out, under a header announcing the room it had just
+			// failed to open. Rendezvous failing is not role-specific; only the
+			// sentence it deserves is.
+			if (e instanceof RendezvousError) rendezvousFailure = e;
 			else error = e.message;
 		});
 
@@ -269,12 +299,16 @@
 	}
 
 	/**
-	 * A reload rather than re-running `asGuest`: the failed join left a
-	 * half-built network behind it, and starting clean is both simpler and more
-	 * likely to work than reusing it. Safe here in a way it is not for a host,
-	 * whose reload ends the room.
+	 * A reload rather than re-running `asGuest`/`asHost`: the failed attempt left
+	 * a half-built network behind it, and starting clean is both simpler and more
+	 * likely to work than reusing it.
+	 *
+	 * A reload normally ends a host's room, which is why nothing else on their
+	 * side offers one. It is safe on this path for the reason the path exists:
+	 * the announce failed, so there is no room to end - and the URL still carries
+	 * the code and `create=1`, so the reload re-hosts rather than joining.
 	 */
-	function retryJoin() {
+	function retryRendezvous() {
 		location.reload();
 	}
 
@@ -285,7 +319,10 @@
 </script>
 
 <svelte:head>
-	<title>{badCode ? 'Not a room' : `Room ${shownCode}`} - SyncStream</title>
+	<!-- A code names a room only once one exists, and in neither of these did. -->
+	<title
+		>{badCode ? 'Not a room' : roomUnopened ? "Couldn't open the room" : `Room ${shownCode}`} - SyncStream</title
+	>
 </svelte:head>
 
 {#if debug}
@@ -294,12 +331,14 @@
 
 <main class="flex min-h-screen flex-col items-center px-4 py-6 font-sans">
 	<!--
-		Withheld when the code is broken. The header announced "Room
+		Withheld when there is no room behind the code. The header announced "Room
 		badcode-nonsense" in the same 2xl mono as a real code, directly above a
 		banner saying that is not a room code - dressing the URL's garbage up as a
-		room and then denying it.
+		room and then denying it. A failed announce read even worse, because that
+		code looks entirely real: it invites a host to send "Room VUF48U" to their
+		friends, and nobody is listening on it.
 	-->
-	{#if !badCode}
+	{#if !roomless}
 		<!--
 			Just the code. The invite now lives wherever the host's attention already
 			is - the panel before the film, the bar under the player during it -
@@ -364,14 +403,14 @@
 		<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
 	{/if}
 
-	{#if guestPhase}
+	{#if roomPhase}
 		<WaitingRoom
-			phase={guestPhase}
+			phase={roomPhase}
 			code={shownCode}
 			{hostName}
-			attempts={joinFailure?.attempts ?? []}
+			attempts={rendezvousFailure?.attempts ?? []}
 			reason={unplayable}
-			onRetry={retryJoin}
+			onRetry={retryRendezvous}
 		/>
 	{/if}
 

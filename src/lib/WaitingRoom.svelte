@@ -3,25 +3,34 @@
 	import { CODE_LENGTH } from '$lib/rendezvous/codes';
 
 	/**
-	 * Everything a guest sees before there is a video to show.
+	 * The screen for a room with no video on it - mostly a guest's, and every
+	 * dead end either end can reach.
 	 *
-	 * The waits below are indistinguishable to a guest from the outside - all of
-	 * them are "nothing is happening yet" - but they call for completely
-	 * different actions: keep waiting, go get the right code, or leave. Naming
-	 * which one you are in is the whole job of this screen.
+	 * The waits below are indistinguishable from the outside - all of them are
+	 * "nothing is happening yet" - but they call for completely different
+	 * actions: keep waiting, go get the right code, or leave. Naming which one
+	 * you are in is the whole job of this screen.
 	 *
-	 * `invalid` is the odd one out: nothing was ever attempted, because the code
-	 * in the URL could not name a room. It still belongs here rather than in an
-	 * error banner, since to the person holding a broken link it is the same
-	 * situation as `failed` - the film is not going to play, now what?
+	 * `invalid` is the odd one out among the waits: nothing was ever attempted,
+	 * because the code in the URL could not name a room. It still belongs here
+	 * rather than in an error banner, since to the person holding a broken link
+	 * it is the same situation as `failed` - the film is not going to play, now
+	 * what?
+	 *
+	 * `unopened` is the only phase that is the host's alone. It is the same
+	 * rendezvous failure as `failed` read from the other end - the guest found
+	 * no room to join, the host opened none - and it lands here for the reason
+	 * `invalid` does: it is a dead end, and this is the screen that knows how to
+	 * end one.
 	 */
-	export type Phase = 'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected';
+	export type Phase =
+		'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected' | 'unopened';
 
 	let {
 		phase,
 		code,
 		hostName = '',
-		/** Per-strategy diagnostics from a RendezvousError, for a `failed` phase. */
+		/** Per-strategy diagnostics from a RendezvousError: `failed` or `unopened`. */
 		attempts = [] as readonly string[],
 		/** The host's probe verdict, for a `rejected` phase. */
 		reason = '',
@@ -95,6 +104,22 @@
 			A room only exists while its host has the page open. Check the code, or ask them to send the
 			invite link again.
 		</p>
+	{:else if phase === 'unopened'}
+		<!--
+			The host's half of `failed`, and deliberately not worded as it. "No one
+			is hosting" is the wrong sentence for the person who was trying to be
+			the host: nobody failed to show up, the announce never went out, and
+			there is no code to re-check because we drew it ourselves.
+
+			The cause is not claimed outright. A relay that would not answer is what
+			this almost always is, but an occupancy collision throws the same error
+			with the same emptiness on screen, and the details below say which.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">Couldn't open the room</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			A room has to be announced through a public relay before anyone can join it, and that didn't
+			get through. Relays come and go, so trying again often works.
+		</p>
 	{:else if phase === 'invalid'}
 		<!--
 			A truncated or mistyped link. Deliberately not phrased as "no one is
@@ -115,15 +140,17 @@
 		</p>
 	{/if}
 
-	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid'}
+	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
 		<!--
 			Every dead end used to be a line of text and nothing else: the only way
 			out was editing the URL. `failed` gets a retry because a host who is
-			merely slow to open the room makes it succeed on the second press.
-			`invalid` does not - the same broken code cannot start working.
+			merely slow to open the room makes it succeed on the second press, and
+			`unopened` because the relay that would not answer is not the same relay
+			a second attempt reaches. `invalid` gets none - the same broken code
+			cannot start working, so the button would be a lie.
 		-->
 		<div class="mt-6 flex justify-center gap-3">
-			{#if phase === 'failed'}
+			{#if phase === 'failed' || phase === 'unopened'}
 				<button
 					onclick={onRetry}
 					class="rounded border border-tangerine-600 bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500 active:bg-tangerine-600"
@@ -155,11 +182,11 @@
 		</details>
 	{/if}
 
-	{#if phase === 'failed' && attempts.length}
+	{#if (phase === 'failed' || phase === 'unopened') && attempts.length}
 		<!--
-			The relay-by-relay diagnostic used to BE the error message a guest read.
-			It is worth keeping for a bug report and worth hiding from someone who
-			just wants to watch a film.
+			The relay-by-relay diagnostic used to BE the error message a guest read,
+			and the whole of what a host read. It is worth keeping for a bug report
+			and worth hiding from someone who just wants to watch a film.
 		-->
 		<details class="mt-6 text-left">
 			<summary class="cursor-pointer text-center text-xs text-moonstone-700">

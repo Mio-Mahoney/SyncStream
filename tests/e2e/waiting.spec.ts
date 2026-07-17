@@ -70,6 +70,36 @@ test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
 	await expect(page.getByTestId('waiting-room')).toContainText(/no host answered within \d+ms/);
 });
 
+test('a host whose room will not open is told so, and given a way out', async ({ page }) => {
+	// Every relay dead. The host's rendezvous walks its whole ladder and throws
+	// the same RendezvousError a guest's failed join does -- which the page used
+	// to route, for a host only, straight into the raw error banner.
+	await page.routeWebSocket(/.*/, (ws) => ws.close());
+	await page.goto('/?debug=1');
+	await page.getByText('Create room').click();
+
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'unopened', { timeout: 60_000 });
+	await expect(page.getByTestId('waiting-title')).toHaveText("Couldn't open the room");
+
+	// The whole of this state was the relay log in a red banner, with no control
+	// on the page: the only way on was editing the URL.
+	await expect(page.getByTestId('error')).toHaveCount(0);
+	await expect(page.getByTestId('retry')).toBeVisible();
+
+	// The code was drawn by us and announced nowhere, so the header rendering it
+	// at 2xl mono invited the host to send their friends a room that is not there.
+	await expect(page.getByTestId('room-code')).toHaveCount(0);
+	await expect(page).toHaveTitle(/Couldn't open the room/);
+
+	// Kept for a bug report, out of the way of someone who wants to watch a film.
+	await page.getByText('Connection details').click();
+	await expect(waiting).toContainText(/did not connect within \d+ms/);
+
+	await page.getByTestId('go-home').click();
+	await expect(page).toHaveURL(/\/$/);
+});
+
 test('a guest who arrives before the host picks a file knows it is connected', async ({
 	page,
 	context
