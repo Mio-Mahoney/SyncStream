@@ -101,6 +101,21 @@
 	let playing = $state(false);
 	let duration = $state(0);
 	let currentTime = $state(0);
+	/**
+	 * The film has played for whoever is reading this page, at some point.
+	 *
+	 * Only the readiness barrier's copy needs it, and it needs it badly: the
+	 * barrier holds the room both when a guest runs out of buffer mid-film and
+	 * when a guest simply has not loaded the opening yet, and only the first of
+	 * those is anybody falling behind. Latched rather than derived from
+	 * `playing`, because the barrier's whole job is to pause - by the time the
+	 * banner is up, `playing` is false in both cases and cannot tell them apart.
+	 *
+	 * Per reader, not per room, which is what makes it right for a guest who
+	 * joins mid-film: the room has been playing for an hour, but nothing has
+	 * fallen behind for THEM - they are loading their way in like everyone did.
+	 */
+	let started = $state(false);
 
 	const name = `Guest ${Math.floor(Math.random() * 900 + 100)}`;
 
@@ -330,6 +345,7 @@
 	 */
 	function syncPlayState() {
 		playing = !video.paused;
+		if (playing) started = true;
 		stats.mediaTime = video.currentTime;
 		stats.playing = playing;
 	}
@@ -481,7 +497,7 @@
 			address them, which means their own stall shows up here as an empty list.
 		-->
 		{#if waitingOn.length || waitingOnYou}
-			<BarrierNotice on={waitingOn} you={waitingOnYou} />
+			<BarrierNotice on={waitingOn} you={waitingOnYou} {started} />
 		{/if}
 
 		<!--

@@ -1,5 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
-import { openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
+import {
+	fixture,
+	openGuest,
+	openHost,
+	openRoom,
+	snapshot,
+	throttle,
+	until,
+	videoTime
+} from './helpers';
 
 /**
  * PLAN.md Phase 2's acceptance criterion, at fixture scale.
@@ -190,6 +199,90 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 	// unplayable path: a one-way announcement with no "never mind" is a latch.
 	await expect(guestNotice).toBeHidden();
 	await expect(page.getByTestId('waiting')).toBeHidden();
+});
+
+/**
+ * The barrier's other half, and the one everybody hits: it holds the room open
+ * before anyone has watched anything, because a guest arrives with an empty
+ * buffer and that is simply the way in.
+ *
+ * Regression: it said the same thing there as it does for a mid-film stall, so
+ * the first thing every new guest read - within a second of the host picking a
+ * file, over a film that had never played a frame - was "Your connection fell
+ * behind. The film starts again on its own once it catches up." Every clause of
+ * that is false during the opening buffer, and it opens a watch party by
+ * blaming the guest's connection for a stall that has not happened.
+ *
+ * The throttle is what makes the wait long enough to assert against rather than
+ * a ~2s flicker. It goes on before the file, so it shapes the opening buffer -
+ * which is the moment under test - rather than a recovery from it.
+ */
+test('a guest loading the opening is not told their connection fell behind', async ({
+	page,
+	context
+}) => {
+	const { code } = await openRoom(page);
+	const { page: guest } = await openGuest(context, code);
+	await until(
+		() => snapshot(page),
+		(s) => s.peers.length === 1,
+		{
+			what: 'the guest to reach the host',
+			timeout: 60_000
+		}
+	);
+	const guestName = (await snapshot(page)).peers[0].name;
+
+	await throttle(page, 400_000);
+	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
+
+	// The guest's half, and their first impression of the room. What the guest
+	// must NOT be told leads, because that is the defect: these three are the
+	// exact words the banner used to open a watch party with, and each one of
+	// them is a claim about a stall that has not happened.
+	const guestNotice = guest.getByTestId('waiting');
+	await expect(guestNotice).toBeVisible({ timeout: 60_000 });
+	await expect(guestNotice).not.toContainText('fell behind');
+	await expect(guestNotice).not.toContainText('catch up');
+	await expect(guestNotice).not.toContainText('starts again');
+	await expect(guestNotice).toContainText('Still loading the film for you');
+	await expect(guestNotice).toHaveAttribute('data-started', 'false');
+	await expect(guestNotice).toHaveAttribute('data-you', 'true');
+	// Pinned because it is how the fix could regress into passing trivially: the
+	// banner must still be addressed to the guest, not withheld from them
+	// because the honest wording was hard.
+	await expect(guest.getByTestId('waiting-you')).toBeVisible();
+	await expect(guestNotice).not.toContainText(guestName);
+
+	// The host's half: "waiting for X to catch up" over a film nobody has played
+	// reads as a friend with a bad connection, when it is the normal way in.
+	const hostNotice = page.getByTestId('waiting');
+	await expect(hostNotice).not.toContainText('catch up');
+	await expect(hostNotice).toHaveText(new RegExp(`Still loading the film for ${guestName}\\.`));
+	await expect(hostNotice).toHaveAttribute('data-started', 'false');
+
+	// And it is only the pre-roll wording that changed: once the film has played
+	// for this reader, a stall is a stall again.
+	await throttle(page, null);
+	await page.getByTestId('play').click();
+	await until(
+		() => videoTime(guest),
+		(t) => t > 0.5,
+		{ what: 'the guest to start playing' }
+	);
+	await expect(guestNotice).toBeHidden();
+	await expect(hostNotice).toBeHidden();
+	await throttle(page, 3_000_000);
+	await until(
+		() => snapshot(page),
+		(s) => s.waitingOn.length > 0,
+		{
+			what: 'the barrier to trip again mid-film',
+			timeout: 60_000
+		}
+	);
+	await expect(guestNotice).toHaveAttribute('data-started', 'true');
+	await expect(guestNotice).toContainText('fell behind');
 });
 
 /**
