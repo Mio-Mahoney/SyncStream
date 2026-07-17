@@ -19,7 +19,10 @@ export default tseslint.config(
 		}
 	},
 	{
-		files: ['**/*.svelte'],
+		// eslint-plugin-svelte points svelte-eslint-parser at rune modules
+		// (*.svelte.ts) as well as components, but never sets the inner parser.
+		// Without this the TypeScript in src/lib/stats.svelte.ts fails to parse.
+		files: ['**/*.svelte', '**/*.svelte.ts', '**/*.svelte.js'],
 		languageOptions: {
 			parserOptions: {
 				parser: tseslint.parser

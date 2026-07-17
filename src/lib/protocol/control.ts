@@ -1,0 +1,151 @@
+/**
+ * JSON control protocol (PLAN.md 7, Phases 2/3/5).
+ *
+ * Rules that hold across every message here:
+ *  - The host is the sole authority for playback state and the sole source of
+ *    truth for media bytes (PLAN.md 4.9). Guests send *intent*, never commands.
+ *  - Guests never send playback state to each other. The only guest-to-guest
+ *    traffic is Phase 5 segment exchange, which cannot affect correctness.
+ *  - `state` carries absolute values, never relative toggles, so it is
+ *    idempotent and safe to re-apply or drop.
+ */
+
+export type Track = 'video' | 'audio';
+
+/** segIdx sentinel for a representation's init segment. */
+export const INIT_SEGMENT = -1;
+
+export type Role = 'host' | 'guest';
+
+/**
+ * First message on every control channel. Establishes which peer is the host,
+ * which is also how a would-be host detects that a room code is already
+ * occupied (PLAN.md 4.7).
+ */
+export type Hello = { t: 'hello'; role: Role; name: string };
+
+/** Host is segmenting and the manifest is valid. */
+export type Ready = { t: 'ready'; mpd: string; duration: number };
+
+/** Host cannot serve this file at all (PLAN.md 4.3 tier 3), with a real reason. */
+export type Unplayable = { t: 'unplayable'; reason: string };
+
+export type SegReq = {
+	t: 'segReq';
+	reqId: number;
+	repId: number;
+	track: Track;
+	/** INIT_SEGMENT for the init segment. */
+	segIdx: number;
+};
+
+/** Payload rides the data channel as SegData frames keyed by reqId. */
+export type SegErr = { t: 'segErr'; reqId: number; reason: string };
+
+export type SegCancel = { t: 'segCancel'; reqId: number };
+
+/** NTP-style clock estimation (PLAN.md 7, Phase 3). */
+export type Ping = { t: 'ping'; t0: number };
+export type Pong = { t: 'pong'; t0: number; t1: number };
+
+/** Authoritative playback state. `seq` is monotonic; guests drop stale ones. */
+export type State = {
+	t: 'state';
+	playing: boolean;
+	mediaTime: number;
+	atHostClock: number;
+	seq: number;
+};
+
+/** Guest asks; the host decides and broadcasts. */
+export type Intent = {
+	t: 'intent';
+	action: 'play' | 'pause' | 'seek';
+	mediaTime: number;
+};
+
+/** Guest health for the readiness barrier (PLAN.md 7, Phase 3). */
+export type Status = {
+	t: 'status';
+	bufferedAhead: number;
+	rung: number | null;
+	throughput: number;
+	name: string;
+};
+
+/** Host tells the room who it is waiting for, so guests can show it too. */
+export type Waiting = { t: 'waiting'; on: string[] };
+
+/**
+ * Which rungs are warm enough to select (PLAN.md 4.2, 4.5).
+ *
+ * Not in the plan's protocol sketch, but its rung-warmth rule needs a wire
+ * message and this is it. The MPD lists every rung the host *can* produce,
+ * because a static VOD manifest is fetched once and rebuilding it would not
+ * reach a loaded player. Warmth therefore rides the control channel and lands
+ * on Shaka's `abr.restrictions`, which is exactly what 4.5 prescribes: "cap
+ * abr.restrictions where a rung is not yet generated".
+ */
+export type Rungs = { t: 'rungs'; available: number[] };
+
+/** Phase 5 mesh. A guest announces newly cached segments to the host tracker. */
+export type Have = { t: 'have'; keys: string[] };
+export type SourcesReq = { t: 'sourcesReq'; reqId: number; keys: string[] };
+export type SourcesRes = { t: 'sourcesRes'; reqId: number; sources: Record<string, string[]> };
+
+export type ControlMessage =
+	| Hello
+	| Ready
+	| Unplayable
+	| SegReq
+	| SegErr
+	| SegCancel
+	| Ping
+	| Pong
+	| State
+	| Intent
+	| Status
+	| Waiting
+	| Rungs
+	| Have
+	| SourcesReq
+	| SourcesRes;
+
+export type ControlType = ControlMessage['t'];
+
+/** Key for a segment in caches, `have` sets, and the mesh tracker. */
+export function segKey(repId: number, track: Track, segIdx: number): string {
+	return `${repId}/${track}/${segIdx}`;
+}
+
+export function parseSegKey(key: string): { repId: number; track: Track; segIdx: number } | null {
+	const parts = key.split('/');
+	if (parts.length !== 3) return null;
+	const repId = Number(parts[0]);
+	const segIdx = Number(parts[2]);
+	const track = parts[1];
+	if (!Number.isInteger(repId) || !Number.isInteger(segIdx)) return null;
+	if (track !== 'video' && track !== 'audio') return null;
+	return { repId, track, segIdx };
+}
+
+export function encodeControl(msg: ControlMessage): string {
+	return JSON.stringify(msg);
+}
+
+/**
+ * Parses an untrusted control frame. Returns null rather than throwing: a peer
+ * sending us garbage is a peer to ignore, not a reason to tear down the room.
+ */
+export function decodeControl(raw: string): ControlMessage | null {
+	let val: unknown;
+	try {
+		val = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (typeof val !== 'object' || val === null) return null;
+	const t = (val as { t?: unknown }).t;
+	if (typeof t !== 'string') return null;
+	return val as ControlMessage;
+}
