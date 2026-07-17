@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { openGuest, openRoom } from './helpers';
+import { openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
 
 /**
  * The guest's screen before there is a video on it.
@@ -158,4 +158,56 @@ test('a guest who arrives before the host picks a file knows it is connected', a
 	await expect(waiting).toHaveAttribute('data-phase', 'found', { timeout: 45_000 });
 	await expect(waiting).toContainText('Connected to Host');
 	await expect(guest.getByTestId('waiting-title')).toHaveText("You're in");
+});
+
+test('a guest whose host leaves has the film stopped, not just hidden', async ({
+	page,
+	context
+}) => {
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, code);
+
+	await until(
+		() => snapshot(guest),
+		(s) => s.ttff !== null,
+		{
+			what: 'the guest to render a first frame',
+			timeout: 60_000
+		}
+	);
+	await page.getByTestId('play').click();
+	await until(
+		() => videoTime(guest),
+		(t) => t > 1,
+		{ what: 'the guest to advance' }
+	);
+
+	// The host walks out mid-film, with the guest's ~12s lookahead buffer full.
+	await page.close();
+
+	const waiting = guest.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'ended', { timeout: 30_000 });
+	await expect(guest.getByTestId('waiting-title')).toHaveText('The watch party is over');
+
+	// Regression: `ready` only ever took the player off screen, and display:none
+	// does not stop a <video>. Worse, GuestSync re-asserts the host's last state
+	// every tick, so with no host left to update it the loop re-asserted `playing`
+	// forever -- the film played on, audible and invisible, behind a page that
+	// said the party was over and that there was nothing left to play.
+	const stopped = await guest.evaluate(() => {
+		const v = document.querySelector('video') as HTMLVideoElement;
+		return { paused: v.paused, at: v.currentTime };
+	});
+	expect(stopped.paused, 'the film stops when the room does').toBe(true);
+
+	// Pinned separately from `paused` because the sync loop is what undid the
+	// pause before: a single check would pass against a film that restarts a
+	// tick later. This is the assertion the fix is actually about.
+	await new Promise((r) => setTimeout(r, 3000));
+	const later = await guest.evaluate(() => {
+		const v = document.querySelector('video') as HTMLVideoElement;
+		return { paused: v.paused, at: v.currentTime };
+	});
+	expect(later.paused, 'and stays stopped -- nothing restarts it').toBe(true);
+	expect(later.at, 'and does not advance').toBeCloseTo(stopped.at, 2);
 });

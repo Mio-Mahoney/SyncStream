@@ -282,6 +282,16 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		if (hostLink?.peerId === peerId) {
 			// PLAN.md Phase 1: the room exists while the host is connected.
 			hostLink = null;
+			// Nothing steers this element any more, so stop steering it. GuestSync
+			// re-asserts the host's last state every tick by design - that is what
+			// recovers a play() the autoplay policy refused - but with no host left
+			// to update that state, it re-asserted `playing` forever, and would undo
+			// any pause from above within a tick. The guest buffers ~12s ahead
+			// (ladder.ts LOOKAHEAD_SEGMENTS), so the film played on, audible and
+			// invisible, behind a page saying the party was over and that there was
+			// nothing left to play.
+			sync.stop();
+			opts.video.pause();
 			opts.onHostGone();
 		}
 	});

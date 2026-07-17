@@ -267,6 +267,10 @@
 				stats.waitingOn = you ? [...on, name] : on;
 			},
 			onError: (e) => (error = e.message),
+			// The film is already stopped by the time this runs: `ready` takes the
+			// player off screen, and only off screen - `hidden` is display:none,
+			// which does not stop a <video> - so stopping it is guest.ts's job,
+			// next to the sync loop that would otherwise start it again.
 			onHostGone: () => {
 				// PLAN.md Phase 1: the room exists while the host is connected.
 				roomOver = true;
