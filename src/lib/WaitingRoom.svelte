@@ -1,15 +1,21 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { CODE_LENGTH } from '$lib/rendezvous/codes';
 
 	/**
 	 * Everything a guest sees before there is a video to show.
 	 *
-	 * The three waits below are indistinguishable to a guest from the outside -
-	 * all of them are "nothing is happening yet" - but they call for completely
+	 * The waits below are indistinguishable to a guest from the outside - all of
+	 * them are "nothing is happening yet" - but they call for completely
 	 * different actions: keep waiting, go get the right code, or leave. Naming
 	 * which one you are in is the whole job of this screen.
+	 *
+	 * `invalid` is the odd one out: nothing was ever attempted, because the code
+	 * in the URL could not name a room. It still belongs here rather than in an
+	 * error banner, since to the person holding a broken link it is the same
+	 * situation as `failed` - the film is not going to play, now what?
 	 */
-	export type Phase = 'searching' | 'found' | 'failed' | 'ended';
+	export type Phase = 'searching' | 'found' | 'failed' | 'ended' | 'invalid';
 
 	let {
 		phase,
@@ -66,6 +72,18 @@
 			A room only exists while its host has the page open. Check the code, or ask them to send the
 			invite link again.
 		</p>
+	{:else if phase === 'invalid'}
+		<!--
+			A truncated or mistyped link. Deliberately not phrased as "no one is
+			hosting": nothing was looked for, and telling someone their room is
+			empty when their link is broken sends them to ask the host to reopen a
+			room that is already open.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">That link isn't a room</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			Room codes are {CODE_LENGTH} characters, letters and numbers. The one in this address isn't, so
+			the link was probably cut short somewhere. Ask the host to send it again.
+		</p>
 	{:else}
 		<h2 class="text-lg font-medium" data-testid="waiting-title">The watch party is over</h2>
 		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
@@ -74,11 +92,12 @@
 		</p>
 	{/if}
 
-	{#if phase === 'failed' || phase === 'ended'}
+	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid'}
 		<!--
-			Both dead ends used to be a line of text and nothing else: the only way
+			Every dead end used to be a line of text and nothing else: the only way
 			out was editing the URL. `failed` gets a retry because a host who is
 			merely slow to open the room makes it succeed on the second press.
+			`invalid` does not - the same broken code cannot start working.
 		-->
 		<div class="mt-6 flex justify-center gap-3">
 			{#if phase === 'failed'}

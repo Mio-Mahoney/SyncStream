@@ -55,6 +55,8 @@
 	let hostName = $state('');
 	/** A guest's join that walked the whole ladder and found no host. */
 	let joinFailure = $state<RendezvousError | null>(null);
+	/** The URL's code could not name a room, so nothing was ever attempted. */
+	let badCode = $state(false);
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
 	let reading = $state(false);
@@ -76,6 +78,10 @@
 	 * without this the whole page is one line of grey text.
 	 */
 	function phaseFor(): Phase | null {
+		// Ahead of the host check: a code that cannot name a room leaves nothing
+		// to host either, and whoever is holding the broken link needs the same
+		// way out regardless of which end of it they thought they were on.
+		if (badCode) return 'invalid';
 		// The host's own waits are the picker's to describe, and a hard error
 		// already has a banner that says more than a phase name could.
 		if (isHost || error) return null;
@@ -92,7 +98,11 @@
 		exposeTestOracle();
 
 		if (!isValidRoomCode(code)) {
-			error = 'That is not a valid room code.';
+			// Not routed through `error`: that banner is for something that went
+			// wrong mid-session, and it leaves the page with no controls on it at
+			// all. A broken link is a dead end like any other, and belongs on the
+			// screen that knows how to end one.
+			badCode = true;
 			status = '';
 			return;
 		}
@@ -259,7 +269,7 @@
 </script>
 
 <svelte:head>
-	<title>Room {shownCode} - SyncStream</title>
+	<title>{badCode ? 'Not a room' : `Room ${shownCode}`} - SyncStream</title>
 </svelte:head>
 
 {#if debug}
@@ -267,19 +277,27 @@
 {/if}
 
 <main class="flex min-h-screen flex-col items-center px-4 py-6 font-sans">
-	<header class="mb-4 flex w-full max-w-5xl items-center justify-between gap-4">
-		<div>
-			<span class="text-sm text-moonstone-800">Room</span>
-			<b class="ml-2 font-mono text-2xl tracking-[0.2em]" data-testid="room-code">{shownCode}</b>
-		</div>
-		{#if shareUrl}
-			<button
-				onclick={copyLink}
-				class="rounded border bg-moonstone-100 px-3 py-1 text-sm transition hover:bg-moonstone-200"
-				data-testid="copy-link">{copied ? 'Copied' : 'Copy invite link'}</button
-			>
-		{/if}
-	</header>
+	<!--
+		Withheld when the code is broken. The header announced "Room
+		badcode-nonsense" in the same 2xl mono as a real code, directly above a
+		banner saying that is not a room code - dressing the URL's garbage up as a
+		room and then denying it.
+	-->
+	{#if !badCode}
+		<header class="mb-4 flex w-full max-w-5xl items-center justify-between gap-4">
+			<div>
+				<span class="text-sm text-moonstone-800">Room</span>
+				<b class="ml-2 font-mono text-2xl tracking-[0.2em]" data-testid="room-code">{shownCode}</b>
+			</div>
+			{#if shareUrl}
+				<button
+					onclick={copyLink}
+					class="rounded border bg-moonstone-100 px-3 py-1 text-sm transition hover:bg-moonstone-200"
+					data-testid="copy-link">{copied ? 'Copied' : 'Copy invite link'}</button
+				>
+			{/if}
+		</header>
+	{/if}
 
 	{#if error}
 		<p

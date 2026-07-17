@@ -27,6 +27,36 @@ test('a guest whose room has no host is told so, and given a way out', async ({ 
 	await expect(page).toHaveURL(/\/$/);
 });
 
+test('a link with a broken code says so, rather than searching for it', async ({ page }) => {
+	// A link cut short by a chat client. The whole of this state used to be the
+	// banner 'That is not a valid room code.' under a header announcing 'Room
+	// badcode-nonsense' in the same type as a real code, with nothing to click.
+	await page.goto('/room/badcode-nonsense');
+
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'invalid');
+	await expect(page.getByTestId('waiting-title')).toHaveText("That link isn't a room");
+
+	// Not dressed up as a room it is not.
+	await expect(page.getByTestId('room-code')).toHaveCount(0);
+	// Nothing was attempted, so there is nothing to retry: the same broken code
+	// cannot start working.
+	await expect(page.getByTestId('retry')).toHaveCount(0);
+
+	await page.getByTestId('go-home').click();
+	await expect(page).toHaveURL(/\/$/);
+});
+
+test('a broken code is a dead end for a would-be host too', async ({ page }) => {
+	// `?create=1` is the host's own URL. A code that cannot name a room leaves
+	// nothing to host either, so this must not fall through to the picker.
+	await page.goto('/room/badcode-nonsense?create=1');
+
+	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'invalid');
+	await expect(page.getByTestId('file-picker')).toHaveCount(0);
+	await expect(page.getByTestId('go-home')).toBeVisible();
+});
+
 test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
 	await page.goto('/room/K7M4PQ');
 	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'failed', {
