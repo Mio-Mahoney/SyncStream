@@ -533,3 +533,111 @@ test('the barrier notice reaches a guest watching fullscreen', async ({ page, co
 	});
 	expect(clipped, 'the notice must not be clipped out of the player on a phone').toBe(false);
 });
+
+/**
+ * Regression: fullscreen was not fullscreen.
+ *
+ * The control bar is a `bg-vanilla-200` row inside the player, and the player is
+ * the fullscreen element - so asking for fullscreen got you a 52px opaque cream
+ * slab burned across the foot of the picture, a mouse pointer parked on top of
+ * it, and 668px of a 720px screen for the film. Permanently: nothing ever took
+ * it away, for the whole length of the film, on every fullscreen viewing there
+ * has ever been. Fullscreen is how a film gets watched, and this is the one
+ * thing a viewer asks for by pressing that button.
+ *
+ * The film's height is asserted first and on purpose: it is the user-visible
+ * half that needs no hook this test brought with it, and it is true the instant
+ * fullscreen is entered rather than after an idle timeout. So a red run against
+ * unfixed source prints the defect a viewer actually gets (668 of 720) instead
+ * of a missing testid or a poll that timed out looking for one.
+ *
+ * The two negatives at the end are the point of the fix being fullscreen-only:
+ * in the window the bar is the page's chrome and the film is deliberately sized
+ * against it, and a paused film is the one place the controls have to stay -
+ * there is nothing else on a fullscreen screen that says how to start it again.
+ */
+test('the controls get out of the way of a film watched fullscreen', async ({ page }) => {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('video')).toBeVisible({ timeout: 45_000 });
+	await page.waitForFunction(() => {
+		const v = document.querySelector('video');
+		return !!v && v.videoWidth > 0;
+	});
+
+	const bar = () =>
+		page.evaluate(() => {
+			const el = document.querySelector('[data-testid="controls"]');
+			if (!el) return { opacity: 'absent', clickable: true };
+			const cs = getComputedStyle(el);
+			return { opacity: cs.opacity, clickable: cs.pointerEvents !== 'none' };
+		});
+	// The film's own box, not the picture inside it: `object-contain` letterboxes
+	// a 16:9 film in a 16:9 screen to exactly the same rect, and it is the box
+	// that the bar was taking its 52px out of.
+	const filmHeight = () =>
+		page.evaluate(() =>
+			Math.round(document.querySelector('video')!.getBoundingClientRect().height)
+		);
+
+	await page.getByTestId('play').click();
+	await page.getByTestId('fullscreen').click();
+	await expect
+		.poll(() => page.evaluate(() => !!document.fullscreenElement), {
+			message: 'the fullscreen button to enter fullscreen'
+		})
+		.toBe(true);
+
+	// Polled, not sampled once. `document.fullscreenElement` is set before the
+	// `fullscreenchange` listener that tells the bar to get out of the flow has
+	// run, so the frame the poll above returns on still measures the film at
+	// 720-52 and reads as the defect being present. Sampling there passed alone
+	// and failed behind a test that had already warmed the browser up - which is
+	// a flake, not an assertion. The viewport is 720 by the line at the top.
+	await expect
+		.poll(filmHeight, {
+			message: 'a film watched fullscreen must have the whole screen, not the screen minus the bar'
+		})
+		.toBe(720);
+
+	// Move, then leave it alone - which is what watching a film is.
+	await page.mouse.move(600, 300);
+	await expect
+		.poll(bar, { message: 'the controls to get out of the way of an untouched film' })
+		.toMatchObject({ opacity: '0', clickable: false });
+	expect(
+		await page.evaluate(() => document.querySelector('.player')!.classList.contains('cursor-none')),
+		'the pointer is the other half of the intrusion and goes with the bar'
+	).toBe(true);
+
+	// Gone is only acceptable because it comes back for the asking.
+	await page.mouse.move(640, 400);
+	await expect
+		.poll(bar, { message: 'the controls to come back when the viewer moves' })
+		.toMatchObject({ opacity: '1', clickable: true });
+
+	// A paused film keeps them. Hiding the only thing that says how to resume,
+	// on a screen that has nothing else on it, would be a dead end.
+	await page.getByTestId('play').click();
+	await page.waitForTimeout(4000);
+	expect(await bar(), 'a paused fullscreen film must keep its controls').toMatchObject({
+		opacity: '1',
+		clickable: true
+	});
+
+	// Back out to the window, where the bar is the page's chrome and must never
+	// vanish: the window's cap sizes the film against it, and there is a whole
+	// page around it that is not going anywhere. Well past the idle timeout.
+	await page.keyboard.press('f');
+	await expect
+		.poll(() => page.evaluate(() => !!document.fullscreenElement), {
+			message: 'the room to come back out of fullscreen'
+		})
+		.toBe(false);
+	await page.getByTestId('play').click();
+	await page.waitForTimeout(4000);
+	expect(await bar(), 'the windowed bar is page chrome and must stay put').toMatchObject({
+		opacity: '1',
+		clickable: true
+	});
+});

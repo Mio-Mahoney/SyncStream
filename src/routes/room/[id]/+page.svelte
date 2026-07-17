@@ -675,14 +675,14 @@
 <style>
 	/**
 	 * Fullscreen lands on the wrapper, not the video, so the controls come with
-	 * it - which makes the video responsible for yielding the bar its height
-	 * rather than running to the full viewport and pushing it off-screen.
+	 * it.
 	 *
 	 * The column, the shrinking film and its `object-contain` are the wrapper's
-	 * own utilities now, and serve both modes: yielding the bar its height is the
-	 * same job the window's cap needs doing. All fullscreen still asks for is that
-	 * the film *grow* into what is left, rather than hugging its aspect ratio -
-	 * there is a whole screen to fill here and nothing below it to protect.
+	 * own utilities now, and serve both modes. All fullscreen still asks for is
+	 * that the film *grow*, rather than hugging its aspect ratio: the bar takes
+	 * itself out of flow here and lies over the foot of the picture, so the film
+	 * is the only thing left in the column and there is a whole screen for it to
+	 * fill - which is the entire point of having asked for one.
 	 */
 	.player:fullscreen video {
 		flex: 1;

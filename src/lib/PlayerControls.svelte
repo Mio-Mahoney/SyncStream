@@ -23,7 +23,77 @@
 
 	let volume = $state(1);
 	let muted = $state(false);
-	let fullscreen = $state(false);
+
+	/**
+	 * Fullscreen, and ours - not merely "something on this document is
+	 * fullscreen". Everything below dresses the bar differently depending on it,
+	 * so a fullscreen element that is not our player must not count.
+	 */
+	let fullscreenEl = $state<Element | null>(null);
+	const fullscreen = $derived(!!container && !!fullscreenEl && container.contains(fullscreenEl));
+
+	/** No pointer, key or focus for IDLE_MS. Only ever set while fullscreen. */
+	let idle = $state(false);
+	/** The pointer is resting on the bar. A still pointer is still a pointer. */
+	let hovering = $state(false);
+	/**
+	 * Someone tabbed into the bar. Controls must not vanish out from under a
+	 * keyboard, which has no pointer to wake them with and would be left tabbing
+	 * blind through an invisible row.
+	 *
+	 * `:focus-visible` and not focus: clicking the fullscreen button is how you
+	 * get here in the first place, and it leaves that button focused for the rest
+	 * of the film - so a plain focus check is permanently true and the bar never
+	 * hides at all. That is the distinction the pseudo-class exists to draw.
+	 */
+	let focusWithin = $state(false);
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+	const IDLE_MS = 2500;
+
+	/**
+	 * The bar is chrome in the window and an intrusion in fullscreen.
+	 *
+	 * Watching fullscreen meant a 52px opaque cream slab burned across the bottom
+	 * of the picture for the whole film, and 668px of a 720px screen given to the
+	 * film - permanently, because nothing ever took it away. So it hides itself
+	 * once the room has been left alone, the way every player does.
+	 *
+	 * Only while playing: a paused film with no controls is a dead end, since
+	 * nothing else on a fullscreen screen says how to start it again.
+	 */
+	const chromeHidden = $derived(fullscreen && playing && idle && !hovering && !focusWithin);
+
+	function wake() {
+		idle = false;
+		clearTimeout(idleTimer);
+		if (!fullscreen || !playing) return;
+		idleTimer = setTimeout(() => (idle = true), IDLE_MS);
+	}
+
+	/**
+	 * Restarts the countdown whenever the conditions for hiding change, so
+	 * entering fullscreen or resuming a paused film gets a full IDLE_MS with the
+	 * controls up rather than inheriting a timer from before.
+	 */
+	$effect(() => {
+		void fullscreen;
+		void playing;
+		wake();
+		return () => clearTimeout(idleTimer);
+	});
+
+	/**
+	 * The cursor is the other half of the intrusion, and it sits over the film
+	 * rather than over this bar, so it can only be hidden from the element that
+	 * spans the picture. That is the same element this component already asks to
+	 * go fullscreen.
+	 */
+	$effect(() => {
+		if (!container) return;
+		container.classList.toggle('cursor-none', chromeHidden);
+		return () => container.classList.remove('cursor-none');
+	});
 
 	/**
 	 * Where the thumb sits while dragging. A seek is only worth broadcasting once
@@ -96,6 +166,10 @@
 	 * Typing a room code somewhere else must never scrub the film.
 	 */
 	function onKey(e: KeyboardEvent) {
+		// Before the guards: a keystroke is activity whether or not it is one of
+		// ours, and a shortcut that acted on a bar nobody can see would be worse
+		// than the bar.
+		wake();
 		const el = e.target as HTMLElement | null;
 		if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -124,9 +198,16 @@
 	}
 </script>
 
+<!--
+	`wake` on the window rather than on the player: in fullscreen the player IS
+	the window, and outside it there is nothing to wake, so the extra reach costs
+	nothing and a pointer crossing from the page onto the film is one gesture.
+-->
 <svelte:window
 	onkeydown={onKey}
-	onfullscreenchange={() => (fullscreen = !!document.fullscreenElement)}
+	onpointermove={wake}
+	onpointerdown={wake}
+	onfullscreenchange={() => (fullscreenEl = document.fullscreenElement)}
 />
 
 <!--
@@ -146,8 +227,27 @@
 	film gives up height when there is not enough, and the bar never does. A bar
 	that shrank would take the fold's place - clipping its own controls out of an
 	`overflow-hidden` player, which is the defect the wrapping above prevents.
+
+	Out of flow in fullscreen, and only there. In the window the bar is the page's
+	chrome and the film is deliberately sized against it (it is what the window's
+	cap squeezes), so it stays a row under the picture. In fullscreen there is no
+	page and nothing below to protect: the film takes the whole screen and the bar
+	lies over the foot of it, which is also what lets it fade away without the
+	picture jumping 52px every time it does.
 -->
-<div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 bg-vanilla-200 px-3 py-2">
+<div
+	role="group"
+	aria-label="Playback controls"
+	onpointerenter={() => (hovering = true)}
+	onpointerleave={() => (hovering = false)}
+	onfocusin={(e) => (focusWithin = (e.target as HTMLElement).matches(':focus-visible'))}
+	onfocusout={() => (focusWithin = false)}
+	class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2 {fullscreen
+		? 'absolute inset-x-0 bottom-0 bg-vanilla-200/90 transition-opacity duration-300 motion-reduce:transition-none'
+		: 'bg-vanilla-200'} {chromeHidden ? 'pointer-events-none opacity-0' : 'opacity-100'}"
+	data-testid="controls"
+	data-chrome-hidden={chromeHidden}
+>
 	<button
 		onclick={onToggle}
 		class="order-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-tangerine-500 text-moonstone-900 transition hover:bg-tangerine-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-moonstone-500 sm:order-1"
