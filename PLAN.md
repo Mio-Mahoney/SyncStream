@@ -480,6 +480,15 @@ Time to first frame is the one uncomfortable number. It passes, but the spread a
 
 3. **§4.6's strategy list has drifted.** trystero 0.25 split its strategies into separate packages; `trystero/supabase` and `trystero/mqtt` are now stubs that throw on import. The real imports are `trystero` (Nostr), `@trystero-p2p/mqtt`, and `@trystero-p2p/supabase`. Supabase also needs an account, so it is opt-in via `PUBLIC_SUPABASE_URL`/`PUBLIC_SUPABASE_ANON_KEY` and the ladder skips it when unset; Nostr and MQTT need no account and no quota, so they are the zero-cost floor that is always there. The §4.6 priority order is preserved for whenever credentials arrive.
 
+### Deployment (added after the rebuild)
+
+The rebuild left the app runnable but not reachable: every share link pointed at `localhost`, which is nobody else's machine. §4.7's "static files, no server" is what makes fixing that free -- pushing to `main` publishes to <https://mio-mahoney.github.io/SyncStream/> via GitHub Actions, on infrastructure that costs nothing and runs no process of ours. HTTPS comes with it, which is not a nicety: WebCodecs requires a secure context, so the §4.5 transcode tier does not exist over plain HTTP.
+
+Two things fell out of doing it:
+
+- **The share link was built by hand and ignored `paths.base`.** A Pages project site is served under `/<repo>/`, so `${origin}/room/${code}` produced a link that 404s -- correct on localhost and broken in the one place it is used. It now goes through `resolve()`, and the e2e suite runs under a non-empty base path by default, because a root-domain test run is the single configuration that cannot catch this.
+- **§9's TURN decision is unchanged, but is now a config flip rather than a code change.** `PUBLIC_TURN_URLS`/`PUBLIC_TURN_USERNAME`/`PUBLIC_TURN_CREDENTIAL` mirror the Supabase opt-in: absent by default, so the cost that scales with usage stays absent. What §9 asks for -- measure, then decide -- is what the `?debug` overlay's candidate type is for.
+
 ### Known gaps
 
 - **Phase 5's mesh is implemented but not proven.** Its acceptance criterion (four guests, host uplink shaped to 12 Mbps, all four at native) has no test yet, so the mesh should be treated as unverified. It cannot cause a correctness failure by design -- every segment is always fetchable from the host -- but "cannot" is a claim about the code, not a measurement.
