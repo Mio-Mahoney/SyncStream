@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { dropFile, openHost, openRoom, snapshot, until } from './helpers';
+import { dropFile, fixture, openHost, openRoom, snapshot, until } from './helpers';
 
 /**
  * Handing the room a file is the host's first move, and dragging one in from a
@@ -155,4 +155,65 @@ test('asking to change the film brings the picker into view', async ({ page }) =
 	// replacement. Scrolling it off screen to reach the picker would undo that.
 	expect(seen.filmBottom, 'the film must still be on screen above it').toBeGreaterThan(0);
 	expect(errors, 'host page errors').toEqual([]);
+});
+
+test('picking a file is reported once, at the picker it was handed to', async ({ page }) => {
+	// The defect is a relationship between a page-top line and the picker
+	// 250px below it, so the window has to be a known size rather than whatever
+	// the config last defaulted to.
+	await page.setViewportSize({ width: 1280, height: 720 });
+
+	// Reading the file takes as long as it takes, so a single sample after the
+	// pick races the probe and would report the screen it happens to land on.
+	// This records every frame the picker is up: the history either contains the
+	// second announcement or it does not.
+	await page.addInitScript(() => {
+		const w = window as unknown as { __rec?: boolean; __frames?: string[] };
+		w.__frames = [];
+		const tick = () => {
+			requestAnimationFrame(tick);
+			if (!w.__rec) return;
+			const picker = document.querySelector('[data-testid="file-picker"]');
+			if (!picker) return;
+			const elsewhere = [...document.querySelectorAll('main *')]
+				.filter((el) => !picker.contains(el) && el.children.length === 0)
+				.map((el) => el.textContent?.trim() ?? '')
+				.filter((t) => /reading|loading/i.test(t));
+			w.__frames!.push(
+				JSON.stringify({ top: Math.round(picker.getBoundingClientRect().top), elsewhere })
+			);
+		};
+		requestAnimationFrame(tick);
+	});
+
+	await openRoom(page);
+	await page.evaluate(() => ((window as unknown as { __rec: boolean }).__rec = true));
+
+	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
+
+	// The picker speaks for itself while it reads: a spinner, and the name of the
+	// file it was just handed.
+	await expect(page.getByTestId('chosen-file')).toHaveText('tiny-60s.mp4');
+	await until(
+		() => page.getByTestId('video').isVisible(),
+		(v) => v,
+		{ what: 'the film to start' }
+	);
+
+	const frames = (
+		await page.evaluate(() => (window as unknown as { __frames: string[] }).__frames)
+	).map((f) => JSON.parse(f) as { top: number; elsewhere: string[] });
+	expect(frames.length, 'frames sampled while the picker was up').toBeGreaterThan(3);
+
+	// Nothing outside the picker narrates the read. The page used to print
+	// "Reading the file..." at the top while the picker showed a spinner and the
+	// filename, saying one fact twice and saying it worse the second time.
+	const doubled = frames.flatMap((f) => f.elsewhere);
+	expect(doubled, 'the read must be announced only by the picker').toEqual([]);
+
+	// ...and because that line appeared out of nothing at the top of the page, it
+	// shoved the picker down 40px at the exact moment the host committed to a
+	// file - the box they had just dropped on moving out from under the pointer.
+	const tops = [...new Set(frames.map((f) => f.top))];
+	expect(tops, 'the picker must not move when it is handed a file').toHaveLength(1);
 });

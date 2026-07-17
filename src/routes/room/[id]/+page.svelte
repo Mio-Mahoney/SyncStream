@@ -48,9 +48,19 @@
 	 */
 	let opened = $state(false);
 
-	let status = $state('Connecting...');
 	let error = $state('');
 	let unplayable = $state('');
+	/**
+	 * The film playing right now is not being played off disk - it is being
+	 * converted as it streams (PLAN.md 4.3's tier 2). Host-only, and true for as
+	 * long as that film is on, which is why it rides under the player rather than
+	 * in a line of page-top text: it explains a fan that will not stop spinning.
+	 *
+	 * Written after `setFile` resolves, so a rejected file leaves it alone - the
+	 * rejection never displaced the film, and the note is about whatever is
+	 * actually playing.
+	 */
+	let converting = $state('');
 	let shareUrl = $state('');
 	/** Guests holding the room up, never including whoever is reading this page. */
 	let waitingOn = $state<string[]>([]);
@@ -190,13 +200,11 @@
 			// all. A broken link is a dead end like any other, and belongs on the
 			// screen that knows how to end one.
 			badCode = true;
-			status = '';
 			return;
 		}
 
 		const ac = new AbortController();
 		(isHost ? asHost(ac.signal) : asGuest(ac.signal)).catch((e: Error) => {
-			status = '';
 			// "room X was not reachable on any strategy tried (nostr: no host
 			// answered within 9813ms; ...)" is a true sentence that tells nobody
 			// anything they can act on. The waiting room says what it means and
@@ -219,9 +227,6 @@
 	});
 
 	async function asHost(signal: AbortSignal) {
-		// The waiting room's `opening` phase speaks for this wait now, spinner and
-		// all; a line of grey text underneath it would only repeat it.
-		status = '';
 		host = await startHostRoom({
 			video,
 			name: 'Host',
@@ -239,7 +244,6 @@
 				// distinction the first film gets, which a latch would lose on the
 				// second.
 				started = false;
-				status = '';
 			},
 			onError: (e) => (error = e.message),
 			onGuests: (g) => (guests = g),
@@ -261,16 +265,9 @@
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
 			replaceState(`${path}?create=1`, {});
 		}
-		// No "Pick a video to start." here. The invite panel and the picker below
-		// it say what to do and are the controls for doing it; a line of grey text
-		// repeating one of them only buries the other.
-		status = '';
 	}
 
 	async function asGuest(signal: AbortSignal) {
-		// The waiting room speaks for the guest now; a second line of status text
-		// underneath it would only ever repeat or contradict it.
-		status = '';
 		guest = await startGuestRoom({
 			video,
 			code,
@@ -312,17 +309,24 @@
 		});
 	}
 
+	/**
+	 * No "Reading the file..." line up here any more. The picker already says it,
+	 * with the filename attached and at the box the file was just dropped on,
+	 * while this said the same fact worse and 250px away - and, being a line that
+	 * appears from nothing, shoved the panel and the picker 40px down the page at
+	 * the exact moment the host committed to a file.
+	 */
 	async function onFile(file: File) {
 		if (!host) return;
 		reading = true;
-		status = 'Reading the file...';
 		unplayable = '';
 		try {
 			const probe = await host.setFile(file);
-			status = probe.tier === 'direct' ? '' : tierMessage(probe, true);
+			// Assigned either way: a second film that plays off disk has to retire
+			// the first one's note, not inherit it.
+			converting = probe.tier === 'direct' ? '' : tierMessage(probe, true);
 		} catch (err) {
 			unplayable = (err as Error).message;
-			status = '';
 		} finally {
 			reading = false;
 		}
@@ -490,10 +494,6 @@
 		</p>
 	{/if}
 
-	{#if status}
-		<p class="mb-4 text-moonstone-800" data-testid="status">{status}</p>
-	{/if}
-
 	<!--
 		Deliberately still mounted once `unplayable` is set. A rejected file used
 		to take the picker down with it, so the host who dropped an .mkv read a
@@ -593,6 +593,7 @@
 			<HostBar
 				{shareUrl}
 				{guests}
+				note={converting}
 				{barrierEnabled}
 				onToggleBarrier={toggleBarrier}
 				{changing}

@@ -16,6 +16,7 @@
 	let {
 		shareUrl,
 		guests,
+		note = '',
 		barrierEnabled,
 		onToggleBarrier,
 		changing,
@@ -23,6 +24,14 @@
 	}: {
 		shareUrl: string;
 		guests: readonly { peerId: string; name: string }[];
+		/**
+		 * Something about the film that is on, true for as long as it is - today,
+		 * only that it is being converted as it streams rather than played off
+		 * disk. It belongs here because it is the host's fact about the host's
+		 * film, and this is what the host reads under one; the page top, where it
+		 * used to live, had nothing else on it by then and never cleared.
+		 */
+		note?: string;
 		barrierEnabled: boolean;
 		onToggleBarrier: () => void;
 		/** The picker is open below, waiting for a file to replace this one. */
@@ -30,6 +39,15 @@
 		onToggleChanging: () => void;
 	} = $props();
 </script>
+
+{#if note}
+	<!--
+		Its own line above the row rather than a chip inside it: this is a sentence,
+		and the row is controls. Quiet, because nothing is wrong - it explains why
+		the machine is working hard, and there is nothing to do about it.
+	-->
+	<p class="mt-3 text-sm text-moonstone-800" data-testid="host-note">{note}</p>
+{/if}
 
 <div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
 	<Presence {guests} testid="guests" />
