@@ -1,5 +1,14 @@
 import { expect, test } from '@playwright/test';
-import { fixture, openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
+import {
+	fixture,
+	openGuest,
+	openHost,
+	openRoom,
+	snapshot,
+	throttle,
+	until,
+	videoTime
+} from './helpers';
 
 /**
  * PLAN.md 4.3's tiering, against the real-world file shapes from Phase 0.
@@ -86,6 +95,78 @@ test('a host can pick another file after one is rejected', async ({ page }) => {
 	await expect(page.getByTestId('video')).toBeVisible();
 	await expect(page.getByTestId('unplayable')).toBeHidden();
 	expect(errors, 'host page errors').toEqual([]);
+});
+
+/**
+ * The guest's half of the same rejection, which the host's fix above left
+ * behind. The host's verdict is broadcast verbatim, and a guest read it in the
+ * same red banner: "the audio track is AC-3 and this browser cannot decode it",
+ * about a file they do not have, on a machine they are not sitting at, with a
+ * waiting room directly underneath still promising the video was about to
+ * start.
+ */
+test("a guest is told the host's file will not play, and not blamed for it", async ({
+	page,
+	context
+}) => {
+	const { code } = await openRoom(page);
+	const { page: guest, errors } = await openGuest(context, code);
+	// The rejection is broadcast at the moment of rejection, so a guest only ever
+	// hears about it by being in the room first.
+	await until(
+		() => snapshot(guest),
+		(s) => s.peers.some((p) => p.role === 'host'),
+		{ what: 'the guest to reach the host', timeout: 60_000 }
+	);
+
+	await page.getByTestId('file-input').setInputFiles(fixture('ac3-audio.mp4'));
+
+	await expect(guest.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'rejected', {
+		timeout: 30_000
+	});
+	// Named as the host's problem, in the screen that speaks for the guest -- not
+	// as a fault of theirs in the banner written for whoever holds the file.
+	await expect(guest.getByTestId('unplayable')).toBeHidden();
+	await expect(guest.getByTestId('waiting-title')).toHaveText("That video won't play");
+
+	// The real reason survives for a bug report, behind a disclosure, attributed.
+	await expect(guest.getByTestId('reject-reason')).toBeHidden();
+	await guest.getByText("Why it won't play").click();
+	expect((await guest.getByTestId('reject-reason').textContent())!.toLowerCase()).toContain('ac-3');
+
+	expect(errors, 'guest page errors').toEqual([]);
+});
+
+test('a host picking a playable file clears the rejection from the guest', async ({
+	page,
+	context
+}) => {
+	const { code } = await openRoom(page);
+	const { page: guest, errors } = await openGuest(context, code);
+	await until(
+		() => snapshot(guest),
+		(s) => s.peers.some((p) => p.role === 'host'),
+		{ what: 'the guest to reach the host', timeout: 60_000 }
+	);
+
+	await page.getByTestId('file-input').setInputFiles(fixture('ac3-audio.mp4'));
+	await expect(guest.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'rejected', {
+		timeout: 30_000
+	});
+
+	await page.getByTestId('file-input').setInputFiles(fixture('tiny-60s.mp4'));
+	await until(
+		() => snapshot(guest),
+		(s) => s.ttff !== null,
+		{ what: 'the guest to play the second file', timeout: 60_000 }
+	);
+
+	// Nothing ever cleared the guest's copy of the rejection, so the film played
+	// under a banner still swearing it could not be played.
+	await expect(guest.getByTestId('video')).toBeVisible();
+	await expect(guest.getByTestId('waiting-room')).toBeHidden();
+	await expect(guest.getByTestId('unplayable')).toBeHidden();
+	expect(errors, 'guest page errors').toEqual([]);
 });
 
 /**

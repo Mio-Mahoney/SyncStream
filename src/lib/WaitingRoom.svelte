@@ -15,7 +15,7 @@
 	 * error banner, since to the person holding a broken link it is the same
 	 * situation as `failed` - the film is not going to play, now what?
 	 */
-	export type Phase = 'searching' | 'found' | 'failed' | 'ended' | 'invalid';
+	export type Phase = 'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected';
 
 	let {
 		phase,
@@ -23,12 +23,15 @@
 		hostName = '',
 		/** Per-strategy diagnostics from a RendezvousError, for a `failed` phase. */
 		attempts = [] as readonly string[],
+		/** The host's probe verdict, for a `rejected` phase. */
+		reason = '',
 		onRetry
 	}: {
 		phase: Phase;
 		code: string;
 		hostName?: string;
 		attempts?: readonly string[];
+		reason?: string;
 		onRetry: () => void;
 	} = $props();
 </script>
@@ -38,11 +41,15 @@
 	data-testid="waiting-room"
 	data-phase={phase}
 >
-	{#if phase === 'searching' || phase === 'found'}
+	{#if phase === 'searching' || phase === 'found' || phase === 'rejected'}
 		<!--
 			The spinner is the only thing on this screen that distinguishes "working
 			on it" from "hung". Rendezvous walks a ladder of public relays at ten
 			seconds a rung, so this can honestly sit here for twenty seconds.
+
+			`rejected` keeps it because it is a wait like the others and resolves on
+			its own the moment the host picks again - without it the screen reads as
+			a dead end, and the guest leaves a room that is about to start.
 		-->
 		<div
 			class="mx-auto mb-5 h-8 w-8 animate-spin rounded-full border-[3px] border-moonstone-200 border-t-tangerine-500"
@@ -65,6 +72,22 @@
 		<h2 class="text-lg font-medium" data-testid="waiting-title">You're in</h2>
 		<p class="mx-auto mt-2 max-w-[18rem] text-sm text-moonstone-800">
 			Connected to {hostName || 'the host'}. The video starts as soon as they pick one.
+		</p>
+	{:else if phase === 'rejected'}
+		<!--
+			The host's file was rejected. This used to reach the guest as the host's
+			own verdict in a red banner - "The audio track is AC-3 and this browser
+			cannot decode it" - which reads, to a guest, as an accusation against
+			the browser they are sitting in front of and something they should go
+			fix. It is neither: it is the host's file, on the host's machine, and
+			the only person who can act is the host. So the fact stays, the blame
+			moves, and the detail goes behind a disclosure like every other
+			diagnostic on this screen.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">That video won't play</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			{hostName || 'The host'} picked a video this app can't play, so nothing has started. They can pick
+			another one - you'll stay in the room, and it will start on its own.
 		</p>
 	{:else if phase === 'failed'}
 		<h2 class="text-lg font-medium" data-testid="waiting-title">No one is hosting room {code}</h2>
@@ -113,6 +136,23 @@
 				data-testid="go-home">Back to start</a
 			>
 		</div>
+	{/if}
+
+	{#if phase === 'rejected' && reason}
+		<details class="mt-6 text-left">
+			<summary class="cursor-pointer text-center text-xs text-moonstone-700">
+				Why it won't play
+			</summary>
+			<!--
+				Attributed, because the probe writes for the host: "this browser
+				cannot decode it" means the host's browser, and unattributed in front
+				of a guest it names the wrong machine.
+			-->
+			<p class="mt-2 text-xs text-moonstone-700">What the host's browser found in the file:</p>
+			<p class="mt-1 text-xs break-words text-moonstone-700" data-testid="reject-reason">
+				{reason}
+			</p>
+		</details>
 	{/if}
 
 	{#if phase === 'failed' && attempts.length}

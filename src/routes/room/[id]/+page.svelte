@@ -90,6 +90,10 @@
 		// Outranks `ready`, since the host can also leave mid-film.
 		if (roomOver) return 'ended';
 		if (ready) return null;
+		// Below `ready` on purpose. A superseding file clears this anyway, but a
+		// rejection that outranked a playing video is exactly the bug this fixes,
+		// and the ordering makes it unreachable rather than merely unlikely.
+		if (unplayable) return 'rejected';
 		return hostName ? 'found' : 'searching';
 	}
 	const guestPhase = $derived(phaseFor());
@@ -178,6 +182,11 @@
 			signal,
 			onReady: (d) => {
 				duration = d;
+				// A second file supersedes the first, and the host's rejection of the
+				// first stops being true the moment this arrives. Nothing used to
+				// clear it, so a guest whose host retried watched the whole film under
+				// a red banner swearing the video could not be played.
+				unplayable = '';
 				ready = true;
 			},
 			onHostFound: (n) => (hostName = n),
@@ -306,7 +315,14 @@
 		</p>
 	{/if}
 
-	{#if unplayable}
+	<!--
+		The host's banner, and only the host's. The probe's verdict is written for
+		whoever can act on it - it names the file's codec and says to remux it -
+		and the host is the only one who has the file. The same words in front of a
+		guest describe a machine they are not sitting at and a fix they cannot
+		make, so their side of this goes to the waiting room instead.
+	-->
+	{#if isHost && unplayable}
 		<p
 			class="mb-4 max-w-2xl rounded bg-tangerine-100 px-4 py-3 text-tangerine-900"
 			role="alert"
@@ -345,6 +361,7 @@
 			code={shownCode}
 			{hostName}
 			attempts={joinFailure?.attempts ?? []}
+			reason={unplayable}
 			onRetry={retryJoin}
 		/>
 	{/if}
