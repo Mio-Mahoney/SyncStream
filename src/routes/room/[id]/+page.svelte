@@ -380,6 +380,19 @@
 		location.reload();
 	}
 
+	/**
+	 * Opening and closing the picker over a playing film.
+	 *
+	 * Clears the rejection on the way out: it lives inside the picker now, and a
+	 * host who read "that is not a video file" and chose to keep the film they had
+	 * has finished with it. Leaving it set would hang it back up, unprompted and
+	 * about a file two decisions ago, the next time they opened the picker.
+	 */
+	function toggleChanging() {
+		changing = !changing;
+		if (!changing) unplayable = '';
+	}
+
 	function toggleBarrier() {
 		barrierEnabled = !barrierEnabled;
 		host?.barrier.setEnabled(barrierEnabled);
@@ -453,23 +466,6 @@
 		</p>
 	{/if}
 
-	<!--
-		The host's banner, and only the host's. The probe's verdict is written for
-		whoever can act on it - it names the file's codec and says to remux it -
-		and the host is the only one who has the file. The same words in front of a
-		guest describe a machine they are not sitting at and a fix they cannot
-		make, so their side of this goes to the waiting room instead.
-	-->
-	{#if isHost && unplayable}
-		<p
-			class="mb-4 max-w-2xl rounded bg-tangerine-100 px-4 py-3 text-tangerine-900"
-			role="alert"
-			data-testid="unplayable"
-		>
-			{unplayable}
-		</p>
-	{/if}
-
 	{#if status}
 		<p class="mb-4 text-moonstone-800" data-testid="status">{status}</p>
 	{/if}
@@ -479,6 +475,12 @@
 		to take the picker down with it, so the host who dropped an .mkv read a
 		message telling them to remux it and had nothing left to drop the remux
 		onto short of reloading the page, which ends the room.
+
+		The rejection itself rides inside the picker rather than in a banner up
+		here. It is written for whoever holds the file, and the picker is the only
+		place they can act on it - see FilePicker's `rejected`. A guest's side of
+		the same fact goes to the waiting room, which words it for someone who is
+		not sitting at the machine that cannot decode the thing.
 	-->
 	{#if isHost && opened && !ready}
 		<!--
@@ -490,7 +492,12 @@
 			until playback, so the whole pre-film wait reported nothing.
 		-->
 		<InvitePanel {shareUrl} {guests} />
-		<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
+		<FilePicker
+			{onFile}
+			onReject={(reason) => (unplayable = reason)}
+			busy={reading}
+			rejected={unplayable}
+		/>
 	{/if}
 
 	{#if roomPhase}
@@ -565,7 +572,7 @@
 				{barrierEnabled}
 				onToggleBarrier={toggleBarrier}
 				{changing}
-				onToggleChanging={() => (changing = !changing)}
+				onToggleChanging={toggleChanging}
 			/>
 		{/if}
 	</div>
@@ -579,7 +586,12 @@
 	-->
 	{#if isHost && ready && changing}
 		<div class="mt-6 flex w-full flex-col items-center">
-			<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
+			<FilePicker
+				{onFile}
+				onReject={(reason) => (unplayable = reason)}
+				busy={reading}
+				rejected={unplayable}
+			/>
 		</div>
 	{/if}
 </main>

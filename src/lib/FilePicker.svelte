@@ -13,9 +13,21 @@
 		onReject: (reason: string) => void;
 		/** A file is being read. Picking a second one now would race the first. */
 		busy?: boolean;
+		/**
+		 * Why the last file handed to this picker will not play - whether we refused
+		 * it outright or the probe did.
+		 *
+		 * It renders here rather than at the top of the page because this is the
+		 * control it is about: the message names a file the picker was just given
+		 * and asks for a different one. Once the picker could also open below a
+		 * playing film, the page-top banner was 710px away from it and, with the
+		 * picker scrolled into view to be used at all, 282px above the top of the
+		 * viewport - so a host dropped a bad file and watched the screen not change.
+		 */
+		rejected?: string;
 	};
 
-	let { onFile, onReject, busy = false }: Props = $props();
+	let { onFile, onReject, busy = false, rejected = '' }: Props = $props();
 
 	let dragging = $state(false);
 	let chosen = $state('');
@@ -123,44 +135,61 @@
 	</div>
 {/if}
 
-<!-- No lit state: while a file is over the page the overlay covers this entirely. -->
-<label
-	class="mb-4 flex w-full max-w-xl cursor-pointer flex-col items-center rounded-lg border-2 px-8 py-12 text-center transition focus-within:ring-2 focus-within:ring-moonstone-500 {busy
-		? 'cursor-progress border-solid border-moonstone-300 bg-white/50'
-		: 'border-dashed border-moonstone-400 bg-white/50 hover:border-moonstone-500 hover:bg-white/80'}"
-	data-testid="file-picker"
->
-	<input
-		type="file"
-		accept="video/*"
-		class="sr-only"
-		onchange={onChange}
-		disabled={busy}
-		data-testid="file-input"
-	/>
-
-	{#if busy}
-		<span class="spinner mb-3" aria-hidden="true"></span>
-		<span class="max-w-full truncate font-mono text-lg" data-testid="chosen-file">{chosen}</span>
-	{:else}
-		<svg
-			class="mb-3 h-10 w-10 text-moonstone-500"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="1.5"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			aria-hidden="true"
+<div class="mb-4 flex w-full max-w-xl flex-col">
+	<!--
+		Above the drop zone, so the reason and the retry read as one thing: the
+		message ends in "drop another one" and the box that takes it is the next
+		thing under it.
+	-->
+	{#if rejected}
+		<p
+			class="mb-3 rounded bg-tangerine-100 px-4 py-3 text-tangerine-900"
+			role="alert"
+			data-testid="unplayable"
 		>
-			<path d="M12 16V4" />
-			<path d="m7 9 5-5 5 5" />
-			<path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
-		</svg>
-		<span class="text-lg">Drop a video here, or <u>browse</u></span>
-		<span class="mt-1 block text-sm text-moonstone-800">It never leaves your machine.</span>
+			{rejected}
+		</p>
 	{/if}
-</label>
+
+	<!-- No lit state: while a file is over the page the overlay covers this entirely. -->
+	<label
+		class="flex w-full cursor-pointer flex-col items-center rounded-lg border-2 px-8 py-12 text-center transition focus-within:ring-2 focus-within:ring-moonstone-500 {busy
+			? 'cursor-progress border-solid border-moonstone-300 bg-white/50'
+			: 'border-dashed border-moonstone-400 bg-white/50 hover:border-moonstone-500 hover:bg-white/80'}"
+		data-testid="file-picker"
+	>
+		<input
+			type="file"
+			accept="video/*"
+			class="sr-only"
+			onchange={onChange}
+			disabled={busy}
+			data-testid="file-input"
+		/>
+
+		{#if busy}
+			<span class="spinner mb-3" aria-hidden="true"></span>
+			<span class="max-w-full truncate font-mono text-lg" data-testid="chosen-file">{chosen}</span>
+		{:else}
+			<svg
+				class="mb-3 h-10 w-10 text-moonstone-500"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.5"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				aria-hidden="true"
+			>
+				<path d="M12 16V4" />
+				<path d="m7 9 5-5 5 5" />
+				<path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+			</svg>
+			<span class="text-lg">Drop a video here, or <u>browse</u></span>
+			<span class="mt-1 block text-sm text-moonstone-800">It never leaves your machine.</span>
+		{/if}
+	</label>
+</div>
 
 <style>
 	.spinner {
