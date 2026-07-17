@@ -543,8 +543,31 @@
 		/>
 	{/if}
 
-	<div class="w-full max-w-5xl" class:hidden={!ready}>
-		<div bind:this={player} class="player relative overflow-hidden rounded bg-black">
+	<!--
+		Capped at the window, and a flex column so the cap lands on the film rather
+		than on everything under it. A 1080p film across the full 1024px of this
+		block is 576px tall, which with the control bar, the header and the page's
+		own padding put the player's bottom edge at y=700 of a 720px laptop window -
+		so the row beneath it (who is watching, the invite link, the way off a wrong
+		film) began at y=712 and was sliced in half by the fold. Every one of those
+		facts was built to be read while the film plays, and none of them were.
+
+		`100dvh` minus 6rem: the header (2rem plus its 1rem margin) and the page's
+		1.5rem of padding at each end, which is everything between this block and the
+		window. Only a cap - a film in a tall window still renders at its own size
+		and the block hugs it, exactly as before.
+	-->
+	<div class="flex max-h-[calc(100dvh-6rem)] w-full max-w-5xl flex-col" class:hidden={!ready}>
+		<div
+			bind:this={player}
+			class="player relative flex min-h-0 flex-col overflow-hidden rounded bg-black"
+		>
+			<!--
+				`min-h-0` is what lets the film shrink under the cap at all, and
+				`object-contain` is what keeps it the right shape when it does - the box
+				loses height, the picture keeps its aspect ratio and gains bars, which
+				are already the colour of the player behind them.
+			-->
 			<video
 				bind:this={video}
 				ontimeupdate={onTimeUpdate}
@@ -553,7 +576,7 @@
 				onplay={syncPlayState}
 				onpause={syncPlayState}
 				onended={syncPlayState}
-				class="w-full bg-black"
+				class="min-h-0 w-full bg-black object-contain"
 				data-testid="video"
 				playsinline
 			></video>
@@ -652,18 +675,16 @@
 <style>
 	/**
 	 * Fullscreen lands on the wrapper, not the video, so the controls come with
-	 * it. That makes the video responsible for yielding the bar its height rather
-	 * than running to the full viewport and pushing it off-screen.
+	 * it - which makes the video responsible for yielding the bar its height
+	 * rather than running to the full viewport and pushing it off-screen.
+	 *
+	 * The column, the shrinking film and its `object-contain` are the wrapper's
+	 * own utilities now, and serve both modes: yielding the bar its height is the
+	 * same job the window's cap needs doing. All fullscreen still asks for is that
+	 * the film *grow* into what is left, rather than hugging its aspect ratio -
+	 * there is a whole screen to fill here and nothing below it to protect.
 	 */
-	.player:fullscreen {
-		display: flex;
-		flex-direction: column;
-		justify-content: center;
-	}
-
 	.player:fullscreen video {
-		min-height: 0;
 		flex: 1;
-		object-fit: contain;
 	}
 </style>

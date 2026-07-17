@@ -392,6 +392,78 @@ test('every player control is reachable on a phone', async ({ page }) => {
 });
 
 /**
+ * Regression: the room's chrome below the player was sliced in half by the fold
+ * on an ordinary laptop.
+ *
+ * A 1080p film across the full 1024px of the room block is 576px tall, which
+ * with the control bar, the header and the page's own padding put the player's
+ * bottom edge at y=700 of a 720px window. Everything that lives beneath it began
+ * at y=712: for a host, who is watching plus the invite link plus the only way
+ * off a wrong film; for a guest, the roster naming the people they came to watch
+ * with. All of it is built to be read while the film plays, and none of it was.
+ *
+ * `ratio: 1` is load-bearing. `toBeInViewport()` defaults to any intersection at
+ * all, so it passed on the unfixed build off the 8px sliver of a 30px button -
+ * the same too-weak-matcher trap as `toBeVisible` and fullscreen occlusion.
+ *
+ * 1280x720 is set explicitly rather than inherited: the defect is a relationship
+ * between the film's height and the window's, so a config default that drifted
+ * would silently stop testing it.
+ */
+test('the room fits a laptop window with the film playing', async ({ page, context }) => {
+	await page.setViewportSize({ width: 1280, height: 720 });
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+	await expect(page.getByTestId('change-video')).toBeVisible({ timeout: 45_000 });
+
+	const height = (p: Page, testid: string) =>
+		p.evaluate(
+			(id) =>
+				Math.round(document.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect().height),
+			testid
+		);
+	const scrolls = (p: Page) =>
+		p.evaluate(() => document.documentElement.scrollHeight > window.innerHeight);
+
+	// Whole, not partly. Each of these is the host's only copy of its fact.
+	for (const control of ['guests', 'change-video', 'copy-link', 'play', 'seek', 'fullscreen']) {
+		await expect(
+			page.getByTestId(control),
+			`the host's ${control} must be whole on screen`
+		).toBeInViewport({ ratio: 1 });
+	}
+	expect(await scrolls(page), 'nothing in a playing room should need scrolling to').toBe(false);
+
+	// Fitting by shrinking the film to a strip would satisfy everything above and
+	// ruin the one thing the page is for. It gives up the ~46px the bar needs and
+	// no more: 530 of the 576 it would take unconstrained.
+	expect(await height(page, 'video')).toBeGreaterThan(480);
+
+	// The guest's half of the same fold. Their line is shorter than the host's
+	// bar, so the film keeps more of its height here - which is the point of
+	// sizing against the bar rather than against a number.
+	const { page: guest } = await openGuest(context, code);
+	await guest.setViewportSize({ width: 1280, height: 720 });
+	await until(
+		() =>
+			guest.evaluate(() => (document.querySelector('video') as HTMLVideoElement)?.videoWidth ?? 0),
+		(w) => w > 0,
+		{ what: "the guest's film to have a shape to lay out", timeout: 60_000 }
+	);
+	await expect(
+		guest.getByTestId('company'),
+		'the guest roster must be whole on screen'
+	).toBeInViewport({ ratio: 1 });
+	expect(await scrolls(guest)).toBe(false);
+	expect(await height(guest, 'video')).toBeGreaterThan(480);
+
+	// A window with room to spare is not capped: the cap is a ceiling, not a size.
+	await page.setViewportSize({ width: 1280, height: 1000 });
+	await expect
+		.poll(() => height(page, 'video'), { message: 'a tall window to render the film unshrunk' })
+		.toBe(576);
+});
+
+/**
  * The barrier's banner is the only account anybody gets of a film that froze on
  * its own, and it was withheld from the one reader who most needed it.
  *

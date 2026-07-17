@@ -140,7 +140,14 @@
 	parts when it is inline, and above all of them when it is not, so there is no
 	way to slice the row into groups that read correctly at both sizes.
 -->
-<div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 bg-vanilla-200 px-3 py-2">
+
+<!--
+	`shrink-0` because the player is a flex column that the window can squeeze: the
+	film gives up height when there is not enough, and the bar never does. A bar
+	that shrank would take the fold's place - clipping its own controls out of an
+	`overflow-hidden` player, which is the defect the wrapping above prevents.
+-->
+<div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 bg-vanilla-200 px-3 py-2">
 	<button
 		onclick={onToggle}
 		class="order-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-tangerine-500 text-moonstone-900 transition hover:bg-tangerine-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-moonstone-500 sm:order-1"
