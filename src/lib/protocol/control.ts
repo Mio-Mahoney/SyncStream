@@ -24,6 +24,22 @@ export type Role = 'host' | 'guest';
  */
 export type Hello = { t: 'hello'; role: Role; name: string };
 
+/**
+ * A peer has said who it is, replacing whatever it introduced itself as.
+ *
+ * Needed because the name on `hello` is a fallback the machine invented: the
+ * invite link opens a room straight away by design, so a guest is already in it,
+ * already announced, and already on the host's presence line before they have
+ * had any chance to say who they are. Without this, naming yourself would mean
+ * rejoining, and the host would watch you leave and a stranger arrive.
+ *
+ * Either role may send it. A guest's goes to the host, who owns every name in
+ * the room and re-states the roster; the host's is broadcast, because a guest
+ * still waiting for a file knows the host only by the name on its hello and
+ * would otherwise read the old one until the roster's next send.
+ */
+export type Rename = { t: 'rename'; name: string };
+
 /** Host is segmenting and the manifest is valid. */
 export type Ready = { t: 'ready'; mpd: string; duration: number };
 
@@ -122,6 +138,7 @@ export type SourcesRes = { t: 'sourcesRes'; reqId: number; sources: Record<strin
 
 export type ControlMessage =
 	| Hello
+	| Rename
 	| Ready
 	| Unplayable
 	| SegReq

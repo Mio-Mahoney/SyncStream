@@ -11,11 +11,14 @@
 	 */
 
 	import CopyLink from '$lib/CopyLink.svelte';
+	import NameTag from '$lib/NameTag.svelte';
 	import Presence from '$lib/Presence.svelte';
 
 	let {
 		shareUrl,
 		guests,
+		name,
+		onRename,
 		note = '',
 		barrierEnabled,
 		onToggleBarrier,
@@ -24,6 +27,9 @@
 	}: {
 		shareUrl: string;
 		guests: readonly { peerId: string; name: string }[];
+		/** What the room calls the host - "Host" until they say otherwise. */
+		name: string;
+		onRename: (name: string) => void;
 		/**
 		 * Something about the film that is on, true for as long as it is - today,
 		 * only that it is being converted as it streams rather than played off
@@ -50,7 +56,14 @@
 {/if}
 
 <div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-	<Presence names={guests.map((g) => g.name)} testid="guests" />
+	<!--
+		Who is here, and who they are watching it with, as one group: the two halves
+		of the room's population, one of which is the reader.
+	-->
+	<div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+		<Presence names={guests.map((g) => g.name)} testid="guests" />
+		<NameTag {name} {onRename} testid="host-name" />
+	</div>
 
 	<div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-moonstone-800">
 		<label class="flex cursor-pointer items-center gap-2">

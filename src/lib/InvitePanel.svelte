@@ -14,14 +14,20 @@
 	 */
 
 	import CopyLink from '$lib/CopyLink.svelte';
+	import NameTag from '$lib/NameTag.svelte';
 	import Presence from '$lib/Presence.svelte';
 
 	let {
 		shareUrl,
-		guests
+		guests,
+		name,
+		onRename
 	}: {
 		shareUrl: string;
 		guests: readonly { peerId: string; name: string }[];
+		/** What the room calls the host - "Host" until they say otherwise. */
+		name: string;
+		onRename: (name: string) => void;
 	} = $props();
 </script>
 
@@ -39,7 +45,17 @@
 		<CopyLink {shareUrl} />
 	</div>
 
-	<div class="mt-5 border-t border-moonstone-100 pt-4">
+	<!--
+		Beside the arrivals, because it is the same subject read from the other end:
+		this line is who they will see when they get here, and that line is who has.
+		Before the film is the moment a host has to spare for it, and the moment it
+		pays off - a guest who arrives after this reads the host's real name on the
+		hello rather than learning it later.
+	-->
+	<div
+		class="mt-5 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-moonstone-100 pt-4"
+	>
 		<Presence names={guests.map((g) => g.name)} testid="invite-guests" />
+		<NameTag {name} {onRename} testid="host-name" />
 	</div>
 </section>

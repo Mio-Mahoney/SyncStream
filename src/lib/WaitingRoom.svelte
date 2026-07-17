@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { CODE_LENGTH } from '$lib/rendezvous/codes';
+	import NameTag from '$lib/NameTag.svelte';
 
 	/**
 	 * The screen for a room with no video on it - mostly a guest's, and every
@@ -35,7 +36,9 @@
 		attempts = [] as readonly string[],
 		/** The host's probe verdict, for a `rejected` phase. */
 		reason = '',
-		onRetry
+		onRetry,
+		name = '',
+		onRename
 	}: {
 		phase: Phase;
 		code: string;
@@ -43,7 +46,25 @@
 		attempts?: readonly string[];
 		reason?: string;
 		onRetry: () => void;
+		/** What the room calls the reader; omitted where there is no room. */
+		name?: string;
+		onRename?: (name: string) => void;
 	} = $props();
+
+	/**
+	 * Only where the reader is actually in a room. `failed`, `invalid` and
+	 * `unopened` never reached one and `ended` no longer has one, so on those
+	 * screens a name is a fact about nobody - and the only thing they are for is
+	 * getting the reader out.
+	 *
+	 * This is the guest's counterpart of the host's invite panel: the wait for the
+	 * host to pick a film is exactly the spare moment naming yourself needs, and
+	 * doing it here means the host reads your name on the presence line they are
+	 * watching rather than a number.
+	 */
+	const canBeNamed = $derived(
+		!!onRename && (phase === 'searching' || phase === 'found' || phase === 'rejected')
+	);
 </script>
 
 <section
@@ -184,6 +205,12 @@
 				class="rounded border bg-moonstone-100 px-4 py-2 transition hover:bg-moonstone-200 active:bg-moonstone-300"
 				data-testid="go-home">Back to start</a
 			>
+		</div>
+	{/if}
+
+	{#if canBeNamed && onRename}
+		<div class="mt-6 flex justify-center border-t border-moonstone-100 pt-4">
+			<NameTag {name} {onRename} testid="guest-name" />
 		</div>
 	{/if}
 

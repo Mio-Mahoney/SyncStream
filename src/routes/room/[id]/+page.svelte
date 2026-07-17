@@ -9,8 +9,10 @@
 	import HostBar from '$lib/HostBar.svelte';
 	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
+	import NameTag from '$lib/NameTag.svelte';
 	import Presence from '$lib/Presence.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
+	import { fallbackName, readName, saveName } from '$lib/identity';
 	import { tierMessage } from '$lib/media/probe';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
@@ -143,7 +145,27 @@
 	 */
 	let started = $state(false);
 
-	const name = `Guest ${Math.floor(Math.random() * 900 + 100)}`;
+	/**
+	 * What the room calls us. A remembered name if we have ever set one, and the
+	 * machine's fallback otherwise - the room always opens, because the invite
+	 * link's whole promise is that it opens straight away and a name prompt in
+	 * front of it would be a toll booth (see identity.ts).
+	 *
+	 * Reactive, because it is on screen: the tag in the panel, the bar and the
+	 * waiting room all read it back, and the whole point of the control is that
+	 * the reader sees it take.
+	 */
+	let name = $state('');
+
+	function rename(next: string) {
+		name = next;
+		saveName(next);
+		// The engines announced us under the fallback the moment we connected, so
+		// this is a correction sent to a room that has already met us - not a value
+		// read at join time.
+		host?.setName(next);
+		guest?.setName(next);
+	}
 
 	/**
 	 * Which wait this page is in, or null when there is nothing to wait for.
@@ -200,6 +222,9 @@
 	onMount(() => {
 		debug = isDebug();
 		exposeTestOracle();
+		// In onMount rather than at the top level: localStorage does not exist
+		// while this page is being prerendered.
+		name = readName() || fallbackName(isHost ? 'host' : 'guest');
 
 		if (!isValidRoomCode(code)) {
 			// Not routed through `error`: that banner is for something that went
@@ -236,7 +261,7 @@
 	async function asHost(signal: AbortSignal) {
 		host = await startHostRoom({
 			video,
-			name: 'Host',
+			name,
 			origin: page.url.origin,
 			code,
 			signal,
@@ -275,10 +300,11 @@
 	}
 
 	async function asGuest(signal: AbortSignal) {
+		const nameOnEntry = name;
 		guest = await startGuestRoom({
 			video,
 			code,
-			name,
+			name: nameOnEntry,
 			preferred: strategyFromParams(page.url.searchParams),
 			signal,
 			onReady: (d) => {
@@ -293,7 +319,7 @@
 				// watched nothing of it, whatever they watched of the first.
 				started = false;
 			},
-			onHostFound: (n) => (hostName = n),
+			onHostName: (n) => (hostName = n),
 			onCompany: (p) => (company = p),
 			onUnplayable: (reason) => (unplayable = reason),
 			onWaiting: (on, you) => {
@@ -315,6 +341,17 @@
 				ready = false;
 			}
 		});
+		// The waiting room offers the name control from its first frame, and this
+		// engine did not exist for any of the seconds rendezvous spent walking the
+		// relay ladder - which is precisely the wait the control is there to fill.
+		// A rename in that window lands on a null `guest` and is silently dropped:
+		// the tag reads the new name, the room has never heard it, and nothing on
+		// screen ever says so. By now we have said hello under `nameOnEntry`, so
+		// this is a correction, not a first announcement.
+		//
+		// The host needs no counterpart: its own name control lives in the invite
+		// panel, which is gated on `opened` and so cannot exist before its engine.
+		if (name !== nameOnEntry) guest.setName(name);
 	}
 
 	/**
@@ -523,7 +560,7 @@
 			but the only thing rendering it lived inside the player block, hidden
 			until playback, so the whole pre-film wait reported nothing.
 		-->
-		<InvitePanel {shareUrl} {guests} />
+		<InvitePanel {shareUrl} {guests} {name} onRename={rename} />
 		<FilePicker
 			{onFile}
 			onReject={(reason) => (unplayable = reason)}
@@ -540,6 +577,8 @@
 			attempts={rendezvousFailure?.attempts ?? []}
 			reason={unplayable}
 			onRetry={retryRendezvous}
+			{name}
+			onRename={isHost ? undefined : rename}
 		/>
 	{/if}
 
@@ -635,8 +674,16 @@
 			phase the waiting room is speaking for.
 		-->
 		{#if !isHost && ready}
-			<div class="mt-3">
+			<!--
+				The guest's counterpart of HostBar, and named here for the same reason it
+				is there: this row is the room's people, and the reader is one of them.
+				A guest who arrives after the film has started never sees the waiting
+				room long enough to be asked anything, so without this the only people
+				who could ever say who they are would be the ones who turned up early.
+			-->
+			<div class="mt-3 flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
 				<Presence names={company} reader="guest" testid="company" />
+				<NameTag {name} onRename={rename} testid="guest-name" />
 			</div>
 		{/if}
 
@@ -644,6 +691,8 @@
 			<HostBar
 				{shareUrl}
 				{guests}
+				{name}
+				onRename={rename}
 				note={converting}
 				{barrierEnabled}
 				onToggleBarrier={toggleBarrier}

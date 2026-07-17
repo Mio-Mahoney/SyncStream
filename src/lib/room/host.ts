@@ -22,6 +22,12 @@ export type HostRoom = {
 	readonly code: string;
 	readonly shareUrl: string;
 	setFile(file: File): Promise<ProbeResult>;
+	/**
+	 * Say who is hosting. `name` was only ever a fallback ("Host"), and the room
+	 * is where it gets replaced - see identity.ts for why it is not asked for on
+	 * the way in.
+	 */
+	setName(name: string): void;
 	readonly state: HostState;
 	readonly barrier: ReadinessBarrier;
 	close(): void;
@@ -29,6 +35,7 @@ export type HostRoom = {
 
 export type HostRoomOptions = {
 	video: HTMLMediaElement;
+	/** What to call ourselves until `setName` says otherwise. */
 	name: string;
 	origin: string;
 	/**
@@ -52,6 +59,13 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	let network: PeerNetwork | null = null;
 
 	/**
+	 * Mutable, and read at send time rather than captured: every guest already in
+	 * the room when the host names themselves has to learn the new name, and the
+	 * ones who arrive after it must be told the new one on their hello.
+	 */
+	let name = opts.name;
+
+	/**
 	 * PLAN.md 4.7's occupancy check. Codes are client-generated with no server
 	 * to check collisions, so the only honest test is to knock: announce as a
 	 * host and see whether a rival host answers. Rendezvous owns the retry
@@ -65,7 +79,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				link.channels.onControl((msg) => {
 					if (msg.t === 'hello' && msg.role === 'host') occupied = true;
 				});
-				link.channels.sendControl({ t: 'hello', role: 'host', name: opts.name });
+				link.channels.sendControl({ t: 'hello', role: 'host', name });
 			});
 			await sleep(OCCUPANCY_PROBE_MS);
 			if (occupied) {
@@ -151,10 +165,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		for (const link of net.links()) {
 			link.channels.sendControl({
 				t: 'roster',
-				people: [
-					opts.name,
-					...[...guestNames].filter(([id]) => id !== link.peerId).map(([, n]) => n)
-				]
+				people: [name, ...[...guestNames].filter(([id]) => id !== link.peerId).map(([, n]) => n)]
 			});
 		}
 	};
@@ -188,6 +199,16 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				updatePeer(link.peerId, { name: msg.name, role: msg.role });
 				announceGuests();
 				sendReady(link);
+				break;
+
+			// A guest has said who it is, replacing the fallback it arrived under.
+			// Every name in the room is ours to hold and ours to state, so this
+			// lands in the same place its hello did and re-states the roster from
+			// there - which is what carries the new name to the other guests.
+			case 'rename':
+				guestNames.set(link.peerId, msg.name);
+				updatePeer(link.peerId, { name: msg.name });
+				announceGuests();
 				break;
 
 			case 'segReq':
@@ -246,7 +267,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	net.onPeer((link) => {
 		updatePeer(link.peerId, { role: 'guest', candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
-		link.channels.sendControl({ t: 'hello', role: 'host', name: opts.name });
+		link.channels.sendControl({ t: 'hello', role: 'host', name });
 		sendReady(link);
 	});
 
@@ -296,6 +317,17 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		code: rendezvous.code,
 		shareUrl: `${opts.origin}/room/${rendezvous.code}${shareLinkQuery(rendezvous.primary)}`,
 		setFile,
+		/**
+		 * Broadcast, not left to the roster. A guest still waiting for a file knows
+		 * us only by the name on our hello - the roster is not sent until there is a
+		 * room to report - so without this the people most likely to be reading
+		 * "Connected to Host" are the last to learn it is not called that.
+		 */
+		setName: (n: string) => {
+			name = n;
+			net.broadcastControl({ t: 'rename', name: n });
+			announceRoster();
+		},
 		state,
 		barrier,
 		close: () => {

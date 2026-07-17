@@ -28,23 +28,37 @@ export type GuestRoom = {
 	readonly player: shaka.Player | null;
 	close(): void;
 	sendIntent(action: 'play' | 'pause' | 'seek', mediaTime: number): void;
+	/**
+	 * Say who we are. `name` was only ever a fallback ("Guest 412"), and the room
+	 * is where it gets replaced: the invite link puts us in the room before we
+	 * have been asked anything, so naming ourselves has to be something we can do
+	 * from inside it (see identity.ts).
+	 */
+	setName(name: string): void;
 };
 
 export type GuestRoomOptions = {
 	video: HTMLMediaElement;
 	code: string;
+	/** What to call ourselves until `setName` says otherwise. */
 	name: string;
 	preferred?: StrategyName;
 	onReady: (duration: number) => void;
 	/**
-	 * The host has identified itself over the control channel. Rendezvous
-	 * resolving only means *a* peer appeared, which under Phase 5 may be another
-	 * guest, so this is the first moment the room is confirmed to exist. The gap
-	 * between here and `onReady` is the host choosing a file, and it is
-	 * unbounded - without this the guest cannot be told apart from one still
-	 * searching, and reads "looking for the host" while sitting next to it.
+	 * What the host is called, and the first proof it is there at all.
+	 *
+	 * Rendezvous resolving only means *a* peer appeared, which under Phase 5 may
+	 * be another guest, so the host's hello is the first moment the room is
+	 * confirmed to exist. The gap between here and `onReady` is the host choosing
+	 * a file, and it is unbounded - without this the guest cannot be told apart
+	 * from one still searching, and reads "looking for the host" while sitting
+	 * next to it.
+	 *
+	 * Fires again if the host renames itself, since the name on that first hello
+	 * is a fallback the machine invented and this is the only thing carrying the
+	 * host's real one to a guest with no film yet.
 	 */
-	onHostFound: (name: string) => void;
+	onHostName: (name: string) => void;
 	/**
 	 * Who this guest is watching with: the host, then every other guest, as the
 	 * host states it and never including us.
@@ -90,6 +104,11 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * thing that makes that true is refusing to apply state from anyone else.
 	 */
 	let hostLink: PeerLink | null = null;
+	/**
+	 * Mutable, and read at send time: the hello of any peer we meet after we have
+	 * named ourselves must carry the name we chose, not the one we arrived under.
+	 */
+	let name = opts.name;
 	let player: shaka.Player | null = null;
 	let mesh: Mesh | null = null;
 	/**
@@ -281,8 +300,18 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 					hostLink = link;
 					stats.candidateType = link.candidateType;
 					mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
-					opts.onHostFound(msg.name);
+					opts.onHostName(msg.name);
 				}
+				break;
+
+			// Only the host's own name is ours to render. Another guest's reaches us
+			// through the host's roster, which is the only complete view of the room
+			// (see `Roster` in protocol/control) - taking it from the peer directly
+			// would name whoever the mesh happened to link us to and silently omit
+			// the rest.
+			case 'rename':
+				updatePeer(link.peerId, { name: msg.name });
+				if (fromHost) opts.onHostName(msg.name);
 				break;
 
 			case 'ready':
@@ -351,7 +380,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		updatePeer(link.peerId, { candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
 		link.channels.onSegment((reqId, payload) => settle(reqId, (p) => p.resolve(payload)));
-		link.channels.sendControl({ t: 'hello', role: 'guest', name: opts.name });
+		link.channels.sendControl({ t: 'hello', role: 'guest', name });
 	});
 
 	net.onPeerGone((peerId) => {
@@ -392,7 +421,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			bufferedAhead,
 			rung,
 			throughput: hostLink.channels.stats.throughputBps,
-			name: opts.name
+			name
 		});
 		mesh?.announce();
 	}, STATUS_MS);
@@ -403,6 +432,15 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		},
 		sendIntent: (action, mediaTime) =>
 			hostLink?.channels.sendControl({ t: 'intent', action, mediaTime }),
+		/**
+		 * To the host alone, who holds every name in the room and re-states the
+		 * roster from there. Telling the other guests ourselves would race that,
+		 * and would only reach the ones the mesh happened to link us to.
+		 */
+		setName: (n: string) => {
+			name = n;
+			hostLink?.channels.sendControl({ t: 'rename', name: n });
+		},
 		close: () => {
 			clearInterval(statusTimer);
 			sync.stop();
