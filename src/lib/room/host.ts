@@ -7,6 +7,7 @@
  * host's own playback (PLAN.md 4.5).
  */
 
+import { resolve } from '$app/paths';
 import { createOrigin } from '$lib/media/origin';
 import { probeFile, tierMessage } from '$lib/media/probe';
 import type { Origin, ProbeResult } from '$lib/media/types';
@@ -256,7 +257,14 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	return {
 		code: rendezvous.code,
-		shareUrl: `${opts.origin}/room/${rendezvous.code}${shareLinkQuery(rendezvous.primary)}`,
+		// Built through resolve() rather than by hand, so it carries the app's base
+		// path. Hand-writing `/room/...` produced a link that is correct only on a
+		// root domain and 404s everywhere else -- and this string is the entire
+		// product: it is what the host sends to the person they want to watch with.
+		// The path IS resolved; the lint rule only recognises a bare resolve() call
+		// and cannot see through interpolating one into a URL.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		shareUrl: `${opts.origin}${resolve('/room/[id]', { id: rendezvous.code })}${shareLinkQuery(rendezvous.primary)}`,
 		setFile,
 		state,
 		barrier,

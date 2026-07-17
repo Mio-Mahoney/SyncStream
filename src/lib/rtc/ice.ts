@@ -19,12 +19,65 @@ export const STUN_URLS = [
 	'stun:stun.cloudflare.com:3478'
 ];
 
-export const RTC_CONFIG: RTCConfiguration = {
-	iceServers: [{ urls: STUN_URLS }],
-	// Small pool: rendezvous is one-shot per room and pre-gathering a large
-	// pool costs STUN round trips we do not need.
-	iceCandidatePoolSize: 1
-};
+/**
+ * Vite only inlines `import.meta.env` keys matching its `envPrefix`, which
+ * vite.config.ts widens to include `PUBLIC_`. Absent these vars TURN is simply
+ * not configured, which is the intended default and what PLAN.md 9 ships.
+ *
+ * Read as a raw record rather than through `$env/static/public` for the same
+ * reason the Supabase creds are: that module fails the BUILD when a var is
+ * unset, and "unset" has to be a runtime answer here rather than a broken
+ * deploy.
+ */
+const env = import.meta.env as unknown as Record<string, string | undefined>;
+
+/**
+ * A TURN server, if one is configured. Credentials in a static build are public
+ * by construction -- anyone can read them out of the bundle -- so whatever is
+ * pointed at here must be something you are willing to expose. That means a
+ * quota'd or ephemeral-credential service, never a flat-rate relay you would
+ * mind strangers using. PLAN.md 9 covers the policy (coturn's own
+ * `max-bps`/`user-quota`/`total-quota`, and `denied-peer-ip` for RFC1918, since
+ * an open relay reaching internal addresses is an SSRF pivot).
+ */
+function turnServer(): RTCIceServer | null {
+	const urls = env.PUBLIC_TURN_URLS;
+	if (!urls) return null;
+	const username = env.PUBLIC_TURN_USERNAME;
+	const credential = env.PUBLIC_TURN_CREDENTIAL;
+	// A TURN URL without credentials is not a degraded TURN server, it is an ICE
+	// server the browser will try and fail on, wasting gathering time on every
+	// connection. Treat a half-configured TURN as no TURN.
+	if (!username || !credential) return null;
+	return { urls: urls.split(',').map((u) => u.trim()), username, credential };
+}
+
+/**
+ * TURN is absent unless configured, per PLAN.md 9: it is the only cost that
+ * scales with usage, because it relays every byte. STUN alone handles ordinary
+ * residential NAT, which is most of them; symmetric NAT and CGNAT are what fail,
+ * and `stats.svelte.ts` records the candidate type on every connection so that
+ * rate is measured rather than guessed.
+ *
+ * When the measurement says TURN is needed, this turns on with env vars and no
+ * code change. `iceTransportPolicy` stays 'all' regardless -- TURN is the
+ * fallback for peers that cannot connect directly, never the default path, or
+ * every room would relay its video through someone else's bandwidth bill.
+ */
+export function buildRtcConfig(): RTCConfiguration {
+	const turn = turnServer();
+	return {
+		iceServers: turn ? [{ urls: STUN_URLS }, turn] : [{ urls: STUN_URLS }],
+		// Small pool: rendezvous is one-shot per room and pre-gathering a large
+		// pool costs STUN round trips we do not need.
+		iceCandidatePoolSize: 1
+	};
+}
+
+export const RTC_CONFIG: RTCConfiguration = buildRtcConfig();
+
+/** Whether a TURN server is configured, for the debug overlay and diagnostics. */
+export const HAS_TURN = turnServer() !== null;
 
 export type CandidateType = 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown';
 

@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
+import { inviteLink, openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
+import { BASE } from './base';
 
 /**
  * PLAN.md Phase 2's acceptance criterion, at fixture scale.
@@ -62,6 +63,43 @@ test('a guest joins and plays the host local file, in sync', async ({ page, cont
 
 	expect(hostErrors, 'host page errors').toEqual([]);
 	expect(guestErrors, 'guest page errors').toEqual([]);
+});
+
+/**
+ * The product is "send someone a link and watch together", so the link the host
+ * actually copies has to be the link that works. Every other test here builds
+ * the guest URL itself and would keep passing while the copied one 404s.
+ *
+ * `paths.base` is what makes this real rather than pedantic: the deployed site
+ * lives under a path prefix, and a share link assembled without it is correct on
+ * localhost and broken in production -- the one place it is ever used.
+ */
+test('the link the host copies is the link a guest can actually open', async ({
+	page,
+	context
+}) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+	const { code } = await openHost(page, 'tiny-60s.mp4');
+
+	const link = await inviteLink(page);
+	const url = new URL(link);
+
+	expect(url.pathname, 'the invite link must carry the app base path').toBe(`${BASE}/room/${code}`);
+	// PLAN.md 4.6: the link names the strategy that actually carried the room, so
+	// the guest tries the one the host is on first rather than walking the ladder.
+	expect(url.searchParams.get('s'), 'the link names the rendezvous strategy').toBeTruthy();
+	// A guest opening the share link must never be mistaken for a second host.
+	expect(url.searchParams.get('create'), 'the invite link must not carry create=1').toBeNull();
+
+	// The real proof: follow that exact string, as a guest would.
+	const guest = await context.newPage();
+	await guest.goto(link);
+	const ready = await until(
+		() => snapshot(guest),
+		(s) => s.ttff !== null,
+		{ what: 'a guest opening the copied invite link to reach a first frame', timeout: 60_000 }
+	);
+	expect(ready.role).toBe('guest');
 });
 
 test('a guest seek resolves quickly and both sides land together', async ({ page, context }) => {

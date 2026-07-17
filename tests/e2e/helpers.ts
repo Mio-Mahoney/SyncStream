@@ -1,6 +1,7 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { appPath } from './base';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const fixture = (name: string) => join(here, '..', 'fixtures', name);
@@ -50,12 +51,28 @@ export async function until<T>(
 	const interval = opts.interval ?? 100;
 	const deadline = Date.now() + timeout;
 	let last: T | undefined;
+	let lastErr: unknown;
 	for (;;) {
-		last = await fn();
-		if (pred(last)) return last;
+		// `fn` is allowed to throw and we keep polling: reading the oracle races
+		// onMount, so a snapshot taken in the moment after goto() resolves but
+		// before the app has mounted hits an undefined `window.__syncstream`. That
+		// is a poll that is not ready yet, not a failed condition -- and a poller
+		// that dies on the first transient throw is flaky by construction, which
+		// PLAN.md 8 is explicit is worse than having no test. A throw that never
+		// stops still fails, at the deadline, carrying its own message.
+		try {
+			last = await fn();
+			lastErr = undefined;
+			if (pred(last)) return last;
+		} catch (err) {
+			lastErr = err;
+		}
 		if (Date.now() > deadline) {
+			const detail = lastErr
+				? `last error=${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+				: `last=${JSON.stringify(last)?.slice(0, 400)}`;
 			throw new Error(
-				`timed out after ${timeout}ms waiting for ${opts.what ?? 'condition'}; last=${JSON.stringify(last)?.slice(0, 400)}`
+				`timed out after ${timeout}ms waiting for ${opts.what ?? 'condition'}; ${detail}`
 			);
 		}
 		await new Promise((r) => setTimeout(r, interval));
@@ -76,7 +93,7 @@ export const videoTime = (page: Page) =>
 export async function openHost(page: Page, file: string) {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
-	await page.goto('/?debug=1');
+	await page.goto(appPath('/?debug=1'));
 	await page.getByText('Create room').click();
 
 	// The code renders straight from the URL, so it is visible long before
@@ -94,6 +111,21 @@ export async function openGuest(ctx: BrowserContext, code: string) {
 	const page = await ctx.newPage();
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
-	await page.goto(`/room/${code}?debug=1`);
+	await page.goto(appPath(`/room/${code}?debug=1`));
 	return { page, errors };
 }
+
+/**
+ * The invite link the host would actually send someone, read off the page.
+ *
+ * This is the one string the product exists to produce, and it is built from
+ * `paths.base` -- so on any non-root deploy it is also the first thing to break,
+ * silently, in a way no other assertion here would notice.
+ */
+export const inviteLink = (page: Page): Promise<string> =>
+	page.evaluate(async () => {
+		const btn = document.querySelector<HTMLButtonElement>('[data-testid="copy-link"]');
+		if (!btn) throw new Error('no copy-link button; the room never opened');
+		btn.click();
+		return navigator.clipboard.readText();
+	});
