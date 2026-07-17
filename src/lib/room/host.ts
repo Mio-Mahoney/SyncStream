@@ -163,22 +163,26 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	});
 
 	/**
-	 * Whoever last paused the film on purpose, as a peer id - `null` inside the
-	 * box means us, and no box at all means nothing deliberate stopped it.
+	 * Whoever last paused the film on purpose. `peerId: null` means us, and no box
+	 * at all means nothing deliberate stopped it.
 	 *
-	 * An id and not a name, so the name is resolved when the sentence is sent
-	 * rather than when the pause happened: names change (`rename`), and a room
-	 * that keeps saying "Guest 412 paused the film" about someone who has since
-	 * introduced themselves as Bob is naming a stranger.
+	 * Both identities, for the reason `BlockedPeer` carries both: the id is what
+	 * decides who to say the sentence to, and it is also what keeps the name fresh
+	 * - names change (`rename`), and a room still saying "Guest 412 paused the
+	 * film" about someone who has since introduced themselves as Bob is naming a
+	 * stranger. `name` is the reading at the moment they paused, which is what the
+	 * lookup falls back to once they leave: the film is still stopped, they are
+	 * still why, and dropping the sentence when its subject walks out would put
+	 * the room back where it started - halted, with no account of it anywhere.
 	 */
-	let pausedBy: { peerId: string | null } | null = null;
+	let pausedBy: { peerId: string | null; name: string } | null = null;
 
 	const pauserName = (): string | null =>
 		pausedBy === null
 			? null
 			: pausedBy.peerId === null
 				? name
-				: (guestNames.get(pausedBy.peerId) ?? null);
+				: (guestNames.get(pausedBy.peerId) ?? pausedBy.name);
 
 	/**
 	 * Per link, like `waiting` and for the same reason: the person who cannot be
@@ -203,7 +207,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	 * come through here: it has its own banner, and it is not a person.
 	 */
 	const applyIntentFrom = (peerId: string | null, i: Intent) => {
-		if (i.action === 'pause') pausedBy = { peerId };
+		if (i.action === 'pause')
+			pausedBy = { peerId, name: peerId === null ? name : (guestNames.get(peerId) ?? '') };
 		else if (i.action === 'play') pausedBy = null;
 		// A seek leaves it alone: it does not stop or start the film, so whoever
 		// stopped it still stopped it.

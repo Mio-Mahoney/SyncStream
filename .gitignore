@@ -21,6 +21,11 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-tests-results/*
+# Playwright writes and wipes this on every run. The directory is `test-results`,
+# not `tests-results`, and the typo let 1300+ traces get committed - and left the
+# dir mid-rewrite under `git add -A`, which fails outright on a file playwright
+# deleted between the stat and the add.
+/test-results
+
 # Generated on demand by tests/fixtures/gen.sh --large (PLAN.md 7, Phase 0)
 tests/fixtures/large-2gb.mp4
