@@ -37,7 +37,6 @@
 	"type": "module",
 	"dependencies": {
 		"@trystero-p2p/mqtt": "0.25.3",
-		"@trystero-p2p/supabase": "0.25.3",
 		"mp4-muxer": "^5.2.2",
 		"mp4box": "^2.4.1",
 		"shaka-player": "^5.2.1",

@@ -30,6 +30,9 @@ export default tseslint.config(
 		}
 	},
 	{
-		ignores: ['build/', '.svelte-kit/', 'dist/']
+		// `.claude/` holds git worktrees -- other full checkouts of this repo -- so
+		// without it eslint lints every nested worktree's source and minified build
+		// output. `.agents/`/`.gnhf/` are installed-skill and session state.
+		ignores: ['build/', '.svelte-kit/', 'dist/', '.claude/', '.agents/', '.gnhf/']
 	}
 );

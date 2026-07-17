@@ -88,10 +88,10 @@ export function createPeerNetwork(sessions: RendezvousSession[]): PeerNetwork {
 	 * The host announces on every strategy at once (PLAN.md 4.6) while a guest
 	 * walks the ladder, leaving one relay before joining the next. Those two
 	 * events reach us over *different relays* and are therefore unordered: the
-	 * arrival on nostr can land before the departure from supabase is noticed,
-	 * in which case DEDUPE below skipped the nostr join as a duplicate. Dropping
-	 * the supabase link would then lose the peer for good -- onPeerJoin has
-	 * already fired for the session that still holds it and will not fire again.
+	 * arrival on nostr can land before the departure from mqtt is noticed, in
+	 * which case DEDUPE below skipped the nostr join as a duplicate. Dropping the
+	 * mqtt link would then lose the peer for good -- onPeerJoin has already fired
+	 * for the session that still holds it and will not fire again.
 	 *
 	 * So on every drop, re-scan the other sessions for the peer. This is what
 	 * makes the fall-through in PLAN.md 4.6 actually survive a strategy dying

@@ -9,12 +9,14 @@
  * bug with a new name.
  *
  * Packaging note: trystero 0.25 split its strategies into separate packages.
- * `trystero/supabase` and `trystero/mqtt` are deprecation stubs that THROW on
- * import. The real entry points are the root export (which IS nostr),
- * `@trystero-p2p/mqtt`, and `@trystero-p2p/supabase`. All three are loaded with
- * dynamic `import()` so vite code-splits them: the mqtt and supabase
- * transitive deps (`mqtt`, `@supabase/supabase-js`) are large and must not land
- * in the main bundle when they are never used.
+ * `trystero/mqtt` is a deprecation stub that THROWS on import. The real entry
+ * points are the root export (which IS nostr) and `@trystero-p2p/mqtt`, loaded
+ * with dynamic `import()` so vite code-splits mqtt's large transitive dep out of
+ * the main bundle when it is never used.
+ *
+ * Supabase was a third strategy here and was removed: see STRATEGY_ORDER in
+ * transport.ts for why (no Broadcast retention, so trystero's signaling never
+ * reliably completes).
  */
 
 import {
@@ -38,32 +40,7 @@ const APP_ID = 'syncstream';
  */
 export const CONNECT_TIMEOUT_MS = 8000;
 
-/**
- * Supabase has no observable relay signal (see `settle`), so its join resolves
- * on a bounded delay instead. Long enough for a Realtime channel subscription
- * on a healthy link; it buys probability, not proof.
- */
-const SUPABASE_SETTLE_MS = 1500;
-
 const RELAY_POLL_MS = 50;
-
-/**
- * Vite only inlines `import.meta.env` keys matching its `envPrefix`, and
- * SvelteKit deliberately does not widen that for you: vite.config.ts must set
- * `envPrefix: ['VITE_', 'PUBLIC_']` before these resolve to anything. Absent
- * that, or absent the vars, Supabase reports itself unconfigured and the ladder
- * skips it -- which is the intended default state, because Supabase needs an
- * account and a project we do not have. `$env/static/public` is unusable here
- * precisely because it fails the BUILD when a var is unset; this reads the raw
- * record so "unset" is a runtime answer rather than a broken deploy.
- */
-const env = import.meta.env as unknown as Record<string, string | undefined>;
-
-function supabaseCreds(): { url: string; key: string } | null {
-	const url = env.PUBLIC_SUPABASE_URL;
-	const key = env.PUBLIC_SUPABASE_ANON_KEY;
-	return url && key ? { url, key } : null;
-}
 
 /**
  * `getRelaySockets` is exported as `any` by the nostr and mqtt packages. Both
@@ -147,25 +124,6 @@ async function awaitOpenRelay(
 	}
 }
 
-/**
- * Supabase's fallback confirmation, and it is weaker than the others on
- * purpose because nothing better exists in the package.
- *
- * `@trystero-p2p/supabase` keeps its `createClient` result in a module-local
- * variable, exports no `getRelaySockets`, and its `subscribeTopic` awaits the
- * channel's SUBSCRIBED status inside trystero's own closure where we cannot
- * reach it. The only alternative would be constructing a second supabase-js
- * client purely to probe reachability, which opens a second Realtime
- * connection and bills the free tier for the privilege of asking a question.
- * So: a bounded delay, honestly labelled. A join that "confirms" this way has
- * not proven anything except that `joinRoom` did not throw synchronously
- * (which it does for a malformed project URL, since `createClient` runs
- * synchronously inside `joinRoom`).
- */
-function settle(signal?: AbortSignal): Promise<void> {
-	return sleep(SUPABASE_SETTLE_MS, signal);
-}
-
 function makeSession(strategy: StrategyName, selfId: string, room: Room): RendezvousSession {
 	const joinCbs = new Set<(peerId: string) => void>();
 	const leaveCbs = new Set<(peerId: string) => void>();
@@ -229,34 +187,6 @@ async function abandon(room: Room): Promise<void> {
 	}
 }
 
-const supabase: SignalingTransport = {
-	name: 'supabase',
-	isConfigured: () => supabaseCreds() !== null,
-
-	async join(roomId, opts?: JoinOptions) {
-		const creds = supabaseCreds();
-		if (!creds) throw new Error('supabase is not configured');
-
-		const { joinRoom, selfId } = await import('@trystero-p2p/supabase');
-		opts?.signal?.throwIfAborted();
-
-		// Surprising but load-bearing: this strategy's `init` does
-		// `createClient(config.appId, config.relayConfig.supabaseKey)`, so
-		// appId IS the project URL here, not a namespace like the others use.
-		const room = joinRoom(
-			{ appId: creds.url, relayConfig: { supabaseKey: creds.key }, rtcConfig: RTC_CONFIG },
-			roomId
-		);
-		try {
-			await settle(opts?.signal);
-		} catch (err) {
-			await abandon(room);
-			throw err;
-		}
-		return makeSession('supabase', selfId, room);
-	}
-};
-
 const nostr: SignalingTransport = {
 	name: 'nostr',
 	// Public relays, no account, no quota. Always available, which is what
@@ -299,7 +229,7 @@ const mqtt: SignalingTransport = {
 	}
 };
 
-export const transports: Record<StrategyName, SignalingTransport> = { supabase, nostr, mqtt };
+export const transports: Record<StrategyName, SignalingTransport> = { nostr, mqtt };
 
 /**
  * The configured strategies in the order they should be tried: `preferred`

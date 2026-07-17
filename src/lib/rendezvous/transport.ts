@@ -2,22 +2,31 @@
  * The rendezvous seam (PLAN.md 4.6).
  *
  * This interface exists so the free-tier decision stays reversible. Everything
- * above it consumes a `RendezvousSession` and knows nothing about trystero,
- * Nostr, or Supabase. If free-tier rendezvous ever becomes untenable, a
- * Cloudflare Worker with one Durable Object per room implements this interface
- * and nothing else in the codebase moves.
+ * above it consumes a `RendezvousSession` and knows nothing about trystero or
+ * Nostr. If free-tier rendezvous ever becomes untenable, a Cloudflare Worker
+ * with one Durable Object per room implements this interface and nothing else
+ * in the codebase moves.
  *
  * The debt is never the implementation, it is the coupling.
  */
 
-export type StrategyName = 'supabase' | 'nostr' | 'mqtt';
+export type StrategyName = 'nostr' | 'mqtt';
 
 /**
- * Priority order from PLAN.md 4.6. Supabase leads when configured because it
- * is operated and predictable; the public-relay strategies need no account and
- * have no quota, so they are the zero-cost floor that is always available.
+ * Priority order from PLAN.md 4.6, minus Supabase.
+ *
+ * PLAN.md put Supabase Realtime at the front as the "operated, predictable"
+ * strategy, but it was removed after measurement: its trystero adapter
+ * discovers peers yet almost never completes the WebRTC handshake, because
+ * Supabase Broadcast has no message retention and trystero's signaling assumes
+ * the store-and-replay that Nostr/MQTT relays provide (a resend+dedup adapter
+ * only reached ~40% and the fragility lived below it). Rendezvous strategy does
+ * not affect cross-network reachability anyway -- that is STUN/TURN's job
+ * (PLAN.md 9) -- so a lossy operated channel bought nothing over the free public
+ * relays. Nostr and MQTT need no account and have no quota; they are the
+ * zero-cost floor that actually works.
  */
-export const STRATEGY_ORDER: readonly StrategyName[] = ['supabase', 'nostr', 'mqtt'];
+export const STRATEGY_ORDER: readonly StrategyName[] = ['nostr', 'mqtt'];
 
 export function isStrategyName(x: unknown): x is StrategyName {
 	return typeof x === 'string' && (STRATEGY_ORDER as readonly string[]).includes(x);

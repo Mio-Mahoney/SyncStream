@@ -29,3 +29,12 @@ vite.config.ts.timestamp-*
 
 # Generated on demand by tests/fixtures/gen.sh --large (PLAN.md 7, Phase 0)
 tests/fixtures/large-2gb.mp4
+
+# Agent / tooling working directories -- session state, git worktrees, installed
+# skills and their lockfile, MCP config. None of it is project source, and left
+# untracked it only dirties `git status` and trips the prettier scan.
+.claude/
+.agents/
+.gnhf/
+skills-lock.json
+.mcp.json

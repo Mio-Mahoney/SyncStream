@@ -24,10 +24,9 @@ export const STUN_URLS = [
  * vite.config.ts widens to include `PUBLIC_`. Absent these vars TURN is simply
  * not configured, which is the intended default and what PLAN.md 9 ships.
  *
- * Read as a raw record rather than through `$env/static/public` for the same
- * reason the Supabase creds are: that module fails the BUILD when a var is
- * unset, and "unset" has to be a runtime answer here rather than a broken
- * deploy.
+ * Read as a raw record rather than through `$env/static/public`, which fails
+ * the BUILD when a var is unset: "unset" has to be a runtime answer here rather
+ * than a broken deploy.
  */
 const env = import.meta.env as unknown as Record<string, string | undefined>;
 
