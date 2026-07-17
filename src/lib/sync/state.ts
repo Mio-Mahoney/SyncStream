@@ -311,8 +311,21 @@ export class GuestSync {
 
 type PeerHealth = { name: string; blocking: boolean; at: number };
 
-function sameList(a: readonly string[], b: readonly string[]): boolean {
-	return a.length === b.length && a.every((v, i) => v === b[i]);
+/**
+ * A guest the barrier is holding the room for, carrying both of its identities.
+ *
+ * The name is what a sentence about this guest needs; the id is what deciding
+ * who to say that sentence to needs. This used to report only the name, which
+ * left the caller with a list it could not attribute - and the caller then fed
+ * those names back into a map keyed by id, so every lookup missed and every
+ * banner in the app read "Waiting for a guest" no matter who it was waiting for.
+ */
+export type BlockedPeer = { peerId: string; name: string };
+
+function samePeers(a: readonly BlockedPeer[], b: readonly BlockedPeer[]): boolean {
+	return (
+		a.length === b.length && a.every((v, i) => v.peerId === b[i].peerId && v.name === b[i].name)
+	);
 }
 
 /**
@@ -324,16 +337,16 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
  * a resume for everyone: the flapping would be worse than the stall it fixes.
  */
 export class ReadinessBarrier {
-	private readonly onPause: (waitingOn: string[]) => void;
+	private readonly onPause: (waitingOn: BlockedPeer[]) => void;
 	private readonly onResume: () => void;
 	private readonly peers = new Map<string, PeerHealth>();
 	private enabled: boolean;
 	private engaged = false;
-	private announced: string[] = [];
+	private announced: BlockedPeer[] = [];
 	private timer: ReturnType<typeof setInterval> | null;
 
 	constructor(opts: {
-		onPause: (waitingOn: string[]) => void;
+		onPause: (waitingOn: BlockedPeer[]) => void;
 		onResume: () => void;
 		enabled?: boolean;
 	}) {
@@ -346,13 +359,13 @@ export class ReadinessBarrier {
 		this.timer = setInterval(() => this.sweep(), HEARTBEAT_MS);
 	}
 
-	/** Display names of the guests currently blocking the room. */
-	get waitingOn(): string[] {
+	/** The guests currently blocking the room. */
+	get waitingOn(): BlockedPeer[] {
 		if (!this.enabled) return [];
 		const now = nowMs();
-		const out: string[] = [];
-		for (const p of this.peers.values()) {
-			if (p.blocking && now - p.at <= BARRIER_STALE_MS) out.push(p.name);
+		const out: BlockedPeer[] = [];
+		for (const [peerId, p] of this.peers) {
+			if (p.blocking && now - p.at <= BARRIER_STALE_MS) out.push({ peerId, name: p.name });
 		}
 		return out;
 	}
@@ -421,7 +434,7 @@ export class ReadinessBarrier {
 		}
 		// Re-fire while engaged when the list itself changes, so "Waiting for
 		// Jamie" becomes "Waiting for Sam" rather than going stale.
-		if (this.engaged && sameList(on, this.announced)) return;
+		if (this.engaged && samePeers(on, this.announced)) return;
 		this.engaged = true;
 		this.announced = on;
 		this.onPause([...on]);

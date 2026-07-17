@@ -28,16 +28,74 @@ export type GuestRoom = {
 	readonly player: shaka.Player | null;
 	close(): void;
 	sendIntent(action: 'play' | 'pause' | 'seek', mediaTime: number): void;
+	/**
+	 * Say who we are. `name` was only ever a fallback ("Guest 412"), and the room
+	 * is where it gets replaced: the invite link puts us in the room before we
+	 * have been asked anything, so naming ourselves has to be something we can do
+	 * from inside it (see identity.ts).
+	 */
+	setName(name: string): void;
 };
 
 export type GuestRoomOptions = {
 	video: HTMLMediaElement;
 	code: string;
+	/** What to call ourselves until `setName` says otherwise. */
 	name: string;
 	preferred?: StrategyName;
-	onReady: (duration: number) => void;
+	/**
+	 * The film is loaded and playing. `title` is what it is called, which only the
+	 * host can say - the file is on its disk and nowhere else.
+	 */
+	onReady: (film: { duration: number; title: string }) => void;
+	/**
+	 * What the host is called, and the first proof it is there at all.
+	 *
+	 * Rendezvous resolving only means *a* peer appeared, which under Phase 5 may
+	 * be another guest, so the host's hello is the first moment the room is
+	 * confirmed to exist. The gap between here and `onReady` is the host choosing
+	 * a file, and it is unbounded - without this the guest cannot be told apart
+	 * from one still searching, and reads "looking for the host" while sitting
+	 * next to it.
+	 *
+	 * Fires again if the host renames itself, since the name on that first hello
+	 * is a fallback the machine invented and this is the only thing carrying the
+	 * host's real one to a guest with no film yet.
+	 */
+	onHostName: (name: string) => void;
+	/**
+	 * Who this guest is watching with: the host, then every other guest, as the
+	 * host states it and never including us.
+	 *
+	 * The host's counterpart of this fact has had a screen of its own since the
+	 * invite panel ("Guest 412 is here" - the proof their link worked). A guest
+	 * was never told any of it: with the film up, their entire page was the room
+	 * code and a clock, so the people they came to watch with were unaccounted
+	 * for on the one screen that IS the watch party.
+	 *
+	 * Comes off the wire rather than from our own peers, and must: the mesh links
+	 * guests opportunistically, so our peer list is who we happen to be meshed
+	 * with, which is a permanent undercount of the room (see `Roster` in
+	 * protocol/control).
+	 *
+	 * `host` and `guests` stay apart because the screens that read this ask
+	 * different questions of it: under the player it is one room ("Watching with
+	 * Alice and Bob"), while the waiting room has already named the host on the
+	 * line above and is asking who *else* turned up.
+	 */
+	onCompany: (room: { host: string; guests: string[] }) => void;
 	onUnplayable: (reason: string) => void;
-	onWaiting: (on: string[]) => void;
+	/**
+	 * Who the room is being held for. `on` names the other guests; `you` says
+	 * this guest is one of them, which is not derivable here - a guest is never
+	 * told which display name is its own.
+	 */
+	onWaiting: (on: string[], you: boolean) => void;
+	/**
+	 * Who stopped the film, by name, and whether that was us - `you` for the same
+	 * reason `onWaiting` carries it. Null once nothing deliberate is holding it.
+	 */
+	onPaused: (by: string | null, you: boolean) => void;
 	onError: (err: Error) => void;
 	onHostGone: () => void;
 	signal?: AbortSignal;
@@ -60,9 +118,22 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * thing that makes that true is refusing to apply state from anyone else.
 	 */
 	let hostLink: PeerLink | null = null;
+	/**
+	 * Mutable, and read at send time: the hello of any peer we meet after we have
+	 * named ourselves must carry the name we chose, not the one we arrived under.
+	 */
+	let name = opts.name;
 	let player: shaka.Player | null = null;
 	let mesh: Mesh | null = null;
-	let loaded = false;
+	/**
+	 * The manifest of the film in play, or null when there is none.
+	 *
+	 * Identity rather than a boolean, because both questions matter and they have
+	 * different answers: the host re-sends `ready` for the film already playing
+	 * (once from `onPeer`, once from the hello it answers), and a repeat of that
+	 * must not restart anything - while a genuinely different film must.
+	 */
+	let loadedMpd: string | null = null;
 
 	const clock = new ClockSync((msg) => hostLink?.channels.sendControl(msg));
 	const sync = new GuestSync(opts.video, clock);
@@ -138,9 +209,56 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		fn(p);
 	};
 
-	const startPlayback = async (mpd: string, duration: number) => {
-		if (loaded) return;
-		loaded = true;
+	/**
+	 * Take down the film that is playing, leaving the room itself alone.
+	 *
+	 * The host may put on a second film without ending the room, and everything
+	 * `startPlayback` built is about the first one: a Shaka player holding a
+	 * source buffer full of it, segment requests in flight for it, and a mesh
+	 * cache keyed by repId/track/segIdx - keys the next film reuses for entirely
+	 * different bytes. Keeping that cache would have us serve another guest the
+	 * old film's segment 3 under the new film's name, and mesh.ts is explicit
+	 * that it cannot tell: "the key is content-addressing by convention, not by
+	 * digest". So the cache goes with the film, which a fresh mesh is the honest
+	 * way to get. `net.onPeer` replays the links we already have, so rebuilding
+	 * it re-wires the room rather than dropping it.
+	 */
+	const stopPlayback = async () => {
+		if (loadedMpd === null) return;
+		loadedMpd = null;
+		sync.stop();
+		opts.video.pause();
+
+		// Before the mesh goes, so Shaka's own aborts settle their requests
+		// through the transport that issued them.
+		const old = player;
+		player = null;
+		await old?.destroy();
+
+		for (const reqId of [...pending.keys()])
+			settle(reqId, (p) => p.reject(new Error('guest: the host changed the video')));
+
+		mesh?.close();
+		mesh = hostLink
+			? createMesh({ network: net, hostPeerId: hostLink.peerId, fetchFromHost })
+			: null;
+	};
+
+	const startPlayback = async (mpd: string, duration: number, title: string) => {
+		if (loadedMpd === mpd) return;
+		await stopPlayback();
+
+		// `stopPlayback` rebuilds the mesh around the host, and leaves it null when
+		// there is no longer a host to build it around - it tears the old player
+		// down first, and a host who closes their tab during a film change is gone
+		// by the time it reads the link. There is no film to start without one, and
+		// asserting the mesh here instead threw a TypeError out through
+		// `queuePlayback`'s catch into `onError`, which outranks `roomOver` on the
+		// page: the guest lost the screen that says the party is over, and the way
+		// home on it, and read a raw JS error in its place. Leaving is not an error.
+		if (!mesh) return;
+
+		loadedMpd = mpd;
 		markTtffStart();
 
 		player = await createPlayer(opts.video);
@@ -155,7 +273,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		// PLAN.md 4.2: the scheme handler is a URI parser and a promise. Under
 		// Phase 5 the promise happens to prefer a peer, which Shaka neither
 		// knows nor cares about.
-		registerSyncStreamScheme(mesh!.fetch);
+		registerSyncStreamScheme(mesh.fetch);
 
 		// ChannelStats.throughputBps is BYTES/sec; Shaka's
 		// abr.defaultBandwidthEstimate is BITS/sec. Seeding it with the wrong
@@ -179,7 +297,20 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		opts.video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
 		clock.start();
 		sync.start();
-		opts.onReady(duration);
+		opts.onReady({ duration, title });
+	};
+
+	/**
+	 * One film at a time, in the order the host announced them. `ready` arrives
+	 * from an event handler that cannot await, so two of them in quick succession
+	 * would otherwise have a teardown running against a `player.load()` that is
+	 * still building the thing being torn down.
+	 */
+	let playback: Promise<void> = Promise.resolve();
+	const queuePlayback = (mpd: string, duration: number, title: string) => {
+		playback = playback
+			.then(() => startPlayback(mpd, duration, title))
+			.catch((err: Error) => opts.onError(err));
 	};
 
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
@@ -194,11 +325,22 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 					hostLink = link;
 					stats.candidateType = link.candidateType;
 					mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
+					opts.onHostName(msg.name);
 				}
 				break;
 
+			// Only the host's own name is ours to render. Another guest's reaches us
+			// through the host's roster, which is the only complete view of the room
+			// (see `Roster` in protocol/control) - taking it from the peer directly
+			// would name whoever the mesh happened to link us to and silently omit
+			// the rest.
+			case 'rename':
+				updatePeer(link.peerId, { name: msg.name });
+				if (fromHost) opts.onHostName(msg.name);
+				break;
+
 			case 'ready':
-				if (fromHost) void startPlayback(msg.mpd, msg.duration);
+				if (fromHost) queuePlayback(msg.mpd, msg.duration, msg.title);
 				break;
 
 			case 'unplayable':
@@ -212,11 +354,19 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			case 'rungs':
 				if (!fromHost) break;
 				stats.availableRungs = msg.available;
-				if (player && loaded) configurePlayer(player, { availableRungs: msg.available });
+				if (player && loadedMpd) configurePlayer(player, { availableRungs: msg.available });
 				break;
 
 			case 'waiting':
-				if (fromHost) opts.onWaiting(msg.on);
+				if (fromHost) opts.onWaiting(msg.on, msg.you === true);
+				break;
+
+			case 'roster':
+				if (fromHost) opts.onCompany({ host: msg.host, guests: msg.guests });
+				break;
+
+			case 'paused':
+				if (fromHost) opts.onPaused(msg.by ?? null, msg.you === true);
 				break;
 
 			case 'pong':
@@ -259,7 +409,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		updatePeer(link.peerId, { candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
 		link.channels.onSegment((reqId, payload) => settle(reqId, (p) => p.resolve(payload)));
-		link.channels.sendControl({ t: 'hello', role: 'guest', name: opts.name });
+		link.channels.sendControl({ t: 'hello', role: 'guest', name });
 	});
 
 	net.onPeerGone((peerId) => {
@@ -267,6 +417,16 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		if (hostLink?.peerId === peerId) {
 			// PLAN.md Phase 1: the room exists while the host is connected.
 			hostLink = null;
+			// Nothing steers this element any more, so stop steering it. GuestSync
+			// re-asserts the host's last state every tick by design - that is what
+			// recovers a play() the autoplay policy refused - but with no host left
+			// to update that state, it re-asserted `playing` forever, and would undo
+			// any pause from above within a tick. The guest buffers ~12s ahead
+			// (ladder.ts LOOKAHEAD_SEGMENTS), so the film played on, audible and
+			// invisible, behind a page saying the party was over and that there was
+			// nothing left to play.
+			sync.stop();
+			opts.video.pause();
 			opts.onHostGone();
 		}
 	});
@@ -290,7 +450,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			bufferedAhead,
 			rung,
 			throughput: hostLink.channels.stats.throughputBps,
-			name: opts.name
+			name
 		});
 		mesh?.announce();
 	}, STATUS_MS);
@@ -301,6 +461,15 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		},
 		sendIntent: (action, mediaTime) =>
 			hostLink?.channels.sendControl({ t: 'intent', action, mediaTime }),
+		/**
+		 * To the host alone, who holds every name in the room and re-states the
+		 * roster from there. Telling the other guests ourselves would race that,
+		 * and would only reach the ones the mesh happened to link us to.
+		 */
+		setName: (n: string) => {
+			name = n;
+			hostLink?.channels.sendControl({ t: 'rename', name: n });
+		},
 		close: () => {
 			clearInterval(statusTimer);
 			sync.stop();

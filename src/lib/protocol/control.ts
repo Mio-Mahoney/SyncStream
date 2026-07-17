@@ -24,8 +24,32 @@ export type Role = 'host' | 'guest';
  */
 export type Hello = { t: 'hello'; role: Role; name: string };
 
-/** Host is segmenting and the manifest is valid. */
-export type Ready = { t: 'ready'; mpd: string; duration: number };
+/**
+ * A peer has said who it is, replacing whatever it introduced itself as.
+ *
+ * Needed because the name on `hello` is a fallback the machine invented: the
+ * invite link opens a room straight away by design, so a guest is already in it,
+ * already announced, and already on the host's presence line before they have
+ * had any chance to say who they are. Without this, naming yourself would mean
+ * rejoining, and the host would watch you leave and a stranger arrive.
+ *
+ * Either role may send it. A guest's goes to the host, who owns every name in
+ * the room and re-states the roster; the host's is broadcast, because a guest
+ * still waiting for a file knows the host only by the name on its hello and
+ * would otherwise read the old one until the roster's next send.
+ */
+export type Rename = { t: 'rename'; name: string };
+
+/**
+ * Host is segmenting and the manifest is valid.
+ *
+ * `title` is the film's name, and it is the host's to state for the same reason
+ * `Roster` is: the file is on the host's disk and nowhere else, so a guest has
+ * no way to know what it is watching except by being told. Carried here rather
+ * than in a message of its own because the name and the film arrive together and
+ * stop being true together - a second film supersedes both at once.
+ */
+export type Ready = { t: 'ready'; mpd: string; duration: number; title: string };
 
 /** Host cannot serve this file at all (PLAN.md 4.3 tier 3), with a real reason. */
 export type Unplayable = { t: 'unplayable'; reason: string };
@@ -64,6 +88,25 @@ export type Intent = {
 	mediaTime: number;
 };
 
+/**
+ * Who stopped the film, so the room can say why it stopped.
+ *
+ * Anyone may pause: a guest sends `intent` and the host obeys it, which means a
+ * film can halt for everybody at the request of somebody they cannot see. The
+ * `state` that carries the halt is deliberately anonymous - it is absolute,
+ * idempotent playback truth, and who asked for it is not part of that - so the
+ * attribution rides its own message.
+ *
+ * `by` is null when nothing deliberate stopped the film: the barrier's brake has
+ * a banner of its own, and a film that simply ended was not paused by anyone.
+ *
+ * Sent per link and carrying `you`, for the reason `Waiting` and `Roster` do:
+ * the one reader who must not be told "Bob paused the film" is Bob. `you` is the
+ * host's answer and not a name match, which two guests sharing a name would
+ * break.
+ */
+export type Paused = { t: 'paused'; by: string | null; you: boolean };
+
 /** Guest health for the readiness barrier (PLAN.md 7, Phase 3). */
 export type Status = {
 	t: 'status';
@@ -73,8 +116,41 @@ export type Status = {
 	name: string;
 };
 
-/** Host tells the room who it is waiting for, so guests can show it too. */
-export type Waiting = { t: 'waiting'; on: string[] };
+/**
+ * Host tells the room who it is waiting for, so guests can show it too.
+ *
+ * Sent per link rather than broadcast, because the one guest who cannot read
+ * "Waiting for Guest 412" is Guest 412: nothing ever tells a guest which name
+ * is theirs, so the person whose stall froze the film is the only reader who
+ * cannot tell the banner is about them. `on` therefore excludes the recipient
+ * and `you` says whether the recipient is one of the guests being waited on.
+ */
+export type Waiting = { t: 'waiting'; on: string[]; you: boolean };
+
+/**
+ * Host tells each guest who they are watching with: itself, plus every other
+ * guest. The room's population is the host's to state, and only the host's.
+ *
+ * A guest cannot answer this from its own peers, and the tempting assumption
+ * that it can is wrong in a way that never heals: the Phase 5 mesh links guests
+ * to each other opportunistically, not exhaustively, so a guest's peer list is
+ * who it happens to be meshed with. Measured in a three-guest room, two guests
+ * saw all three peers and the third saw only two - permanently. Rendering that
+ * would tell someone they were watching with two people while three watched.
+ * Every guest is connected to the host by definition, which is what makes the
+ * host the one honest source.
+ *
+ * Sent per link and not broadcast, for the reason `Waiting` is: `guests`
+ * excludes the recipient, because a guest is never told which name is theirs
+ * and would read their own name as a stranger's.
+ *
+ * The host is its own field rather than the first of a flat list. A receiver
+ * asks two different questions of this - who is in the room (host included) and
+ * who else is *waiting* alongside me (host excluded, since the screen that asks
+ * has already named them) - and the second is unanswerable from a list whose
+ * host is identified only by position.
+ */
+export type Roster = { t: 'roster'; host: string; guests: string[] };
 
 /**
  * Which rungs are warm enough to select (PLAN.md 4.2, 4.5).
@@ -95,6 +171,7 @@ export type SourcesRes = { t: 'sourcesRes'; reqId: number; sources: Record<strin
 
 export type ControlMessage =
 	| Hello
+	| Rename
 	| Ready
 	| Unplayable
 	| SegReq
@@ -104,8 +181,10 @@ export type ControlMessage =
 	| Pong
 	| State
 	| Intent
+	| Paused
 	| Status
 	| Waiting
+	| Roster
 	| Rungs
 	| Have
 	| SourcesReq
