@@ -88,6 +88,25 @@ export type Intent = {
 	mediaTime: number;
 };
 
+/**
+ * Who stopped the film, so the room can say why it stopped.
+ *
+ * Anyone may pause: a guest sends `intent` and the host obeys it, which means a
+ * film can halt for everybody at the request of somebody they cannot see. The
+ * `state` that carries the halt is deliberately anonymous - it is absolute,
+ * idempotent playback truth, and who asked for it is not part of that - so the
+ * attribution rides its own message.
+ *
+ * `by` is null when nothing deliberate stopped the film: the barrier's brake has
+ * a banner of its own, and a film that simply ended was not paused by anyone.
+ *
+ * Sent per link and carrying `you`, for the reason `Waiting` and `Roster` do:
+ * the one reader who must not be told "Bob paused the film" is Bob. `you` is the
+ * host's answer and not a name match, which two guests sharing a name would
+ * break.
+ */
+export type Paused = { t: 'paused'; by: string | null; you: boolean };
+
 /** Guest health for the readiness barrier (PLAN.md 7, Phase 3). */
 export type Status = {
 	t: 'status';
@@ -162,6 +181,7 @@ export type ControlMessage =
 	| Pong
 	| State
 	| Intent
+	| Paused
 	| Status
 	| Waiting
 	| Roster

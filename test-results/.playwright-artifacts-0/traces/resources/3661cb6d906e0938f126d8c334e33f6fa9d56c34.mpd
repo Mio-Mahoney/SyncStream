@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd"
+  type="static"
+  profiles="urn:mpeg:dash:profile:isoff-live:2011"
+  minBufferTime="PT4S"
+  mediaPresentationDuration="PT1M0.033S">
+  <Period id="0" start="PT0S" duration="PT1M0.033S">
+    <AdaptationSet id="0" contentType="video" mimeType="video/mp4" segmentAlignment="true" subsegmentAlignment="true" startWithSAP="1" subsegmentStartsWithSAP="1" maxWidth="1920" maxHeight="1080" frameRate="29.983">
+      <SegmentTemplate timescale="15360" startNumber="0" initialization="syncstream://rep/$RepresentationID$/video/init" media="syncstream://rep/$RepresentationID$/video/seg/$Number$">
+        <SegmentTimeline>
+          <S t="0" d="61440" r="13"/>
+          <S d="61952"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="0" codecs="avc1.640028" bandwidth="540427" width="1920" height="1080"/>
+      <Representation id="1" codecs="avc1.64001f" bandwidth="2500000" width="1280" height="720"/>
+      <Representation id="2" codecs="avc1.64001f" bandwidth="900000" width="854" height="480"/>
+      <Representation id="3" codecs="avc1.64001e" bandwidth="400000" width="640" height="360"/>
+    </AdaptationSet>
+    <AdaptationSet id="1" contentType="audio" mimeType="audio/mp4" lang="und" segmentAlignment="true" subsegmentAlignment="true" startWithSAP="1" subsegmentStartsWithSAP="1">
+      <SegmentTemplate timescale="48000" startNumber="0" initialization="syncstream://rep/$RepresentationID$/audio/init" media="syncstream://rep/$RepresentationID$/audio/seg/$Number$">
+        <SegmentTimeline>
+          <S t="0" d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="192512"/>
+          <S d="191488"/>
+          <S d="193024"/>
+        </SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="0" codecs="mp4a.40.2" bandwidth="96289" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+      </Representation>
+      <Representation id="0" codecs="mp4a.40.2" bandwidth="96289" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+      </Representation>
+      <Representation id="0" codecs="mp4a.40.2" bandwidth="96289" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+      </Representation>
+      <Representation id="0" codecs="mp4a.40.2" bandwidth="96289" audioSamplingRate="48000">
+        <AudioChannelConfiguration schemeIdUri="urn:mpeg:dash:23003:3:audio_channel_configuration:2011" value="1"/>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>

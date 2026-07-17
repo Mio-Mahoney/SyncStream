@@ -91,6 +91,11 @@ export type GuestRoomOptions = {
 	 * told which display name is its own.
 	 */
 	onWaiting: (on: string[], you: boolean) => void;
+	/**
+	 * Who stopped the film, by name, and whether that was us - `you` for the same
+	 * reason `onWaiting` carries it. Null once nothing deliberate is holding it.
+	 */
+	onPaused: (by: string | null, you: boolean) => void;
 	onError: (err: Error) => void;
 	onHostGone: () => void;
 	signal?: AbortSignal;
@@ -347,6 +352,10 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 
 			case 'roster':
 				if (fromHost) opts.onCompany({ host: msg.host, guests: msg.guests });
+				break;
+
+			case 'paused':
+				if (fromHost) opts.onPaused(msg.by ?? null, msg.you === true);
 				break;
 
 			case 'pong':

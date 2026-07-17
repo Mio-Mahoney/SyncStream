@@ -11,6 +11,7 @@
 	import PlayerControls from '$lib/PlayerControls.svelte';
 	import NameTag from '$lib/NameTag.svelte';
 	import NowPlaying from '$lib/NowPlaying.svelte';
+	import PausedNotice from '$lib/PausedNotice.svelte';
 	import Presence from '$lib/Presence.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
 	import { fallbackName, readName, saveName } from '$lib/identity';
@@ -79,6 +80,18 @@
 	let waitingOn = $state<string[]>([]);
 	/** This page's reader is one of them. Only ever true for a guest. */
 	let waitingOnYou = $state(false);
+	/**
+	 * Whoever stopped the film on purpose, as the host names them, or '' when
+	 * nothing did. Anyone in the room can pause it for everyone, so this is the
+	 * only thing that stops a film halting at the request of someone the reader
+	 * cannot see, with no account of it anywhere.
+	 *
+	 * Empty for the person who pressed pause: the host says whether that is us
+	 * (`pausedByYou`), rather than us matching a name we could share with someone.
+	 */
+	let pausedBy = $state('');
+	/** The reader is who paused it, so they need no telling. */
+	let pausedByYou = $state(false);
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	/**
 	 * A guest's read of the same roster, as the host states it. Kept apart from
@@ -299,6 +312,10 @@
 			onWaiting: (on) => {
 				waitingOn = on;
 				stats.waitingOn = on;
+			},
+			onPaused: (by, you) => {
+				pausedBy = by ?? '';
+				pausedByYou = you;
 			}
 		});
 		hostedCode = host.code;
@@ -346,6 +363,10 @@
 				// belongs in it - the UI's "you" is the same fact worded for a reader
 				// who was never told which Guest NNN they are.
 				stats.waitingOn = you ? [...on, name] : on;
+			},
+			onPaused: (by, you) => {
+				pausedBy = by ?? '';
+				pausedByYou = you;
 			},
 			onError: (e) => (error = e.message),
 			// The film is already stopped by the time this runs: `ready` takes the
@@ -397,12 +418,15 @@
 	// Guests send intent; the host decides and broadcasts (PLAN.md 4.9).
 	function togglePlay() {
 		const action = playing ? 'pause' : 'play';
-		if (host) host.state.applyIntent({ t: 'intent', action, mediaTime: video.currentTime });
+		// Through `host.intent` rather than straight into the sync engine: the room
+		// has to be able to say who stopped it, and a host who reaches past the
+		// funnel a guest's intent lands in is a pause with no author.
+		if (host) host.intent(action, video.currentTime);
 		else guest?.sendIntent(action, video.currentTime);
 	}
 
 	function seek(t: number) {
-		if (host) host.state.applyIntent({ t: 'intent', action: 'seek', mediaTime: t });
+		if (host) host.intent('seek', t);
 		else guest?.sendIntent('seek', t);
 	}
 
@@ -659,8 +683,21 @@
 				the room is waiting for is excluded from `on` precisely so the banner can
 				address them, which means their own stall shows up here as an empty list.
 			-->
+			<!--
+				One explanation at a time, and the barrier's comes first. Both answer
+				"why has the film stopped", and both can be true at once - a guest can
+				run out of buffer under a film somebody had already paused - but the
+				barrier's is the one with something still happening in it, and two
+				banners stacked on one picture read as two separate faults.
+
+				`playing` gates the attribution because the room's own play state is
+				what makes it true: `pausedBy` is the last person to have stopped the
+				film, which stops explaining anything the moment it runs again.
+			-->
 			{#if waitingOn.length || waitingOnYou}
 				<BarrierNotice on={waitingOn} you={waitingOnYou} {started} />
+			{:else if !playing && pausedBy && !pausedByYou}
+				<PausedNotice by={pausedBy} />
 			{/if}
 		</div>
 

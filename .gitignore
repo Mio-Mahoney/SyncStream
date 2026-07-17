@@ -21,5 +21,6 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
+tests-results/*
 # Generated on demand by tests/fixtures/gen.sh --large (PLAN.md 7, Phase 0)
 tests/fixtures/large-2gb.mp4

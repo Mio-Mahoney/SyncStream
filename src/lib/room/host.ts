@@ -29,6 +29,13 @@ export type HostRoom = {
 	 * the way in.
 	 */
 	setName(name: string): void;
+	/**
+	 * Our own play/pause/seek. Through here rather than straight into `state`,
+	 * because a room that stops has to be able to say who stopped it - and this
+	 * is the same funnel a guest's `intent` lands in, so both answers come out
+	 * the same way.
+	 */
+	intent(action: Intent['action'], mediaTime: number): void;
 	readonly state: HostState;
 	readonly barrier: ReadinessBarrier;
 	close(): void;
@@ -51,6 +58,8 @@ export type HostRoomOptions = {
 	onError: (err: Error) => void;
 	onGuests: (guests: { peerId: string; name: string }[]) => void;
 	onWaiting: (on: string[]) => void;
+	/** Who stopped the film, by name, and whether that was us. Null once it runs again. */
+	onPaused: (by: string | null, you: boolean) => void;
 	signal?: AbortSignal;
 };
 
@@ -153,9 +162,61 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		}
 	});
 
+	/**
+	 * Whoever last paused the film on purpose, as a peer id - `null` inside the
+	 * box means us, and no box at all means nothing deliberate stopped it.
+	 *
+	 * An id and not a name, so the name is resolved when the sentence is sent
+	 * rather than when the pause happened: names change (`rename`), and a room
+	 * that keeps saying "Guest 412 paused the film" about someone who has since
+	 * introduced themselves as Bob is naming a stranger.
+	 */
+	let pausedBy: { peerId: string | null } | null = null;
+
+	const pauserName = (): string | null =>
+		pausedBy === null
+			? null
+			: pausedBy.peerId === null
+				? name
+				: (guestNames.get(pausedBy.peerId) ?? null);
+
+	/**
+	 * Per link, like `waiting` and for the same reason: the person who cannot be
+	 * told "Bob paused the film" is Bob. They pressed pause a moment ago and know
+	 * exactly why the film stopped; the sentence is for everyone else.
+	 */
+	const announcePause = () => {
+		const by = pauserName();
+		for (const link of net.links()) {
+			link.channels.sendControl({
+				t: 'paused',
+				by,
+				you: pausedBy !== null && pausedBy.peerId === link.peerId
+			});
+		}
+		opts.onPaused(by, pausedBy !== null && pausedBy.peerId === null);
+	};
+
+	/**
+	 * Every deliberate play, pause and seek in the room, ours included, so there
+	 * is one place that knows who asked. The barrier's brake deliberately does not
+	 * come through here: it has its own banner, and it is not a person.
+	 */
+	const applyIntentFrom = (peerId: string | null, i: Intent) => {
+		if (i.action === 'pause') pausedBy = { peerId };
+		else if (i.action === 'play') pausedBy = null;
+		// A seek leaves it alone: it does not stop or start the film, so whoever
+		// stopped it still stopped it.
+		state.applyIntent(i);
+		if (i.action !== 'seek') announcePause();
+	};
+
 	const announceGuests = () => {
 		opts.onGuests([...guestNames].map(([peerId, name]) => ({ peerId, name })));
 		announceRoster();
+		// A rename changes the answer to "who paused this", and the roster is
+		// exactly when the room re-states who its people are.
+		announcePause();
 	};
 
 	/**
@@ -188,6 +249,14 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		});
 		link.channels.sendControl({ t: 'rungs', available: origin.availableRungs() });
 		link.channels.sendControl(state.snapshot());
+		// The state above may well be a paused one. A guest who arrives to a film
+		// that is stopped needs the reason as much as the people who watched it
+		// stop - more, since they never saw it running.
+		link.channels.sendControl({
+			t: 'paused',
+			by: pauserName(),
+			you: pausedBy !== null && pausedBy.peerId === link.peerId
+		});
 	};
 
 	const serveSegment = async (link: PeerLink, msg: Extract<ControlMessage, { t: 'segReq' }>) => {
@@ -240,7 +309,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 			case 'intent':
 				// PLAN.md 4.9: guests send intent, the host decides and broadcasts.
-				applyIntent(msg);
+				applyIntentFrom(link.peerId, msg);
 				break;
 
 			case 'status':
@@ -273,10 +342,6 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		}
 	};
 
-	const applyIntent = (i: Intent) => {
-		state.applyIntent(i);
-	};
-
 	net.onPeer((link) => {
 		updatePeer(link.peerId, { role: 'guest', candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
@@ -307,6 +372,11 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		// that is on - the same rule `converting` follows on the page, and for the
 		// same reason: a rejected file displaced nothing.
 		title = filmTitle(file.name);
+		// Nobody has paused this film - it has not started. Kept here beside the
+		// title for the same reason: a second film supersedes the first, and an
+		// attribution carried over would explain the new film's stillness with a
+		// decision somebody made about the old one.
+		pausedBy = null;
 
 		origin?.close();
 		if (objectUrl) URL.revokeObjectURL(objectUrl);
@@ -345,7 +415,12 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			name = n;
 			net.broadcastControl({ t: 'rename', name: n });
 			announceRoster();
+			// Our own name is one of the answers to "who paused this".
+			announcePause();
 		},
+		// `null` is us: we have no peer id of our own to compare a link against,
+		// and every link that is not the pauser is being told about someone else.
+		intent: (action, mediaTime) => applyIntentFrom(null, { t: 'intent', action, mediaTime }),
 		state,
 		barrier,
 		close: () => {
