@@ -5,6 +5,7 @@
 	import { resolve } from '$app/paths';
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
 	import FilePicker from '$lib/FilePicker.svelte';
+	import HostBar from '$lib/HostBar.svelte';
 	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
@@ -51,7 +52,6 @@
 	let waitingOn = $state<string[]>([]);
 	let guests = $state<{ peerId: string; name: string }[]>([]);
 	let ready = $state(false);
-	let copied = $state(false);
 	/** Set once the host says hello. Empty means we are still searching. */
 	let hostName = $state('');
 	/** A guest's join that walked the whole ladder and found no host. */
@@ -250,12 +250,6 @@
 		stats.playing = playing;
 	}
 
-	async function copyLink() {
-		await navigator.clipboard.writeText(shareUrl);
-		copied = true;
-		setTimeout(() => (copied = false), 1500);
-	}
-
 	/**
 	 * A reload rather than re-running `asGuest`: the failed join left a
 	 * half-built network behind it, and starting clean is both simpler and more
@@ -288,23 +282,17 @@
 		room and then denying it.
 	-->
 	{#if !badCode}
-		<header class="mb-4 flex w-full max-w-5xl items-center justify-between gap-4">
+		<!--
+			Just the code. The invite now lives wherever the host's attention already
+			is - the panel before the film, the bar under the player during it -
+			rather than in a corner button that had to be found, and that could only
+			ever be copied blind.
+		-->
+		<header class="mb-4 flex w-full max-w-5xl items-center gap-4">
 			<div>
 				<span class="text-sm text-moonstone-800">Room</span>
 				<b class="ml-2 font-mono text-2xl tracking-[0.2em]" data-testid="room-code">{shownCode}</b>
 			</div>
-			<!--
-				Withheld while the invite panel is up, which carries the same action
-				at full weight. Two copy buttons on one screen is one too many, and
-				the corner is the one to lose.
-			-->
-			{#if shareUrl && ready}
-				<button
-					onclick={copyLink}
-					class="rounded border bg-moonstone-100 px-3 py-1 text-sm transition hover:bg-moonstone-200"
-					data-testid="copy-link">{copied ? 'Copied' : 'Copy invite link'}</button
-				>
-			{/if}
 		</header>
 	{/if}
 
@@ -393,16 +381,21 @@
 			</p>
 		{/if}
 
-		{#if isHost}
-			<div class="mt-3 flex items-center justify-between text-sm text-moonstone-800">
-				<span data-testid="guests">
-					{guests.length === 0 ? 'No guests yet' : `${guests.length} watching`}
-				</span>
-				<label class="flex cursor-pointer items-center gap-2">
-					<input type="checkbox" checked={barrierEnabled} onchange={toggleBarrier} />
-					Pause when someone falls behind
-				</label>
-			</div>
+		<!--
+			The invite panel's two facts do not stop mattering once the film starts:
+			who is here, and how to let one more person in. Both used to get worse at
+			exactly that moment - names collapsed to a "1 watching" count, and the
+			only way to invite became a corner button with no link on screen behind
+			it.
+		-->
+		<!--
+			On `ready`, not on the enclosing block's `hidden`: that block stays
+			mounted so the <video> survives, which would otherwise leave this bar's
+			invite button in the DOM alongside the panel's - two invite affordances,
+			one of them invisible.
+		-->
+		{#if isHost && ready}
+			<HostBar {shareUrl} {guests} {barrierEnabled} onToggleBarrier={toggleBarrier} />
 		{/if}
 	</div>
 </main>
