@@ -5,6 +5,7 @@
 	import { resolve } from '$app/paths';
 	import DebugOverlay from '$lib/DebugOverlay.svelte';
 	import FilePicker from '$lib/FilePicker.svelte';
+	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
 	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
 	import { tierMessage } from '$lib/media/probe';
@@ -159,7 +160,10 @@
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
 			replaceState(`${path}?create=1`, {});
 		}
-		status = 'Pick a video to start.';
+		// No "Pick a video to start." here. The invite panel and the picker below
+		// it say what to do and are the controls for doing it; a line of grey text
+		// repeating one of them only buries the other.
+		status = '';
 	}
 
 	async function asGuest(signal: AbortSignal) {
@@ -289,7 +293,12 @@
 				<span class="text-sm text-moonstone-800">Room</span>
 				<b class="ml-2 font-mono text-2xl tracking-[0.2em]" data-testid="room-code">{shownCode}</b>
 			</div>
-			{#if shareUrl}
+			<!--
+				Withheld while the invite panel is up, which carries the same action
+				at full weight. Two copy buttons on one screen is one too many, and
+				the corner is the one to lose.
+			-->
+			{#if shareUrl && ready}
 				<button
 					onclick={copyLink}
 					class="rounded border bg-moonstone-100 px-3 py-1 text-sm transition hover:bg-moonstone-200"
@@ -330,6 +339,15 @@
 		onto short of reloading the page, which ends the room.
 	-->
 	{#if isHost && opened && !ready}
+		<!--
+			Above the picker, because this is the half of the wait that pays off
+			later: guests take time to arrive, and sending the link first means they
+			are connecting while the host is still finding a file. The host already
+			knew who had joined - `guests` has been populated since the first hello -
+			but the only thing rendering it lived inside the player block, hidden
+			until playback, so the whole pre-film wait reported nothing.
+		-->
+		<InvitePanel {shareUrl} {guests} />
 		<FilePicker {onFile} onReject={(reason) => (unplayable = reason)} busy={reading} />
 	{/if}
 
