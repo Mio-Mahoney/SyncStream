@@ -21,9 +21,34 @@
  * serving one: `sendControl(segReq)` out, `onSegment` back, with the framing and
  * backpressure of rtc/channel.ts underneath. There is no second protocol here,
  * and there is no guest-to-guest traffic other than this exchange.
+ *
+ * FETCH DIVERSITY (the prefetcher, PLAN.md 11's equilibrium escape). A purely
+ * reactive mesh fails the Phase 5 criterion structurally: Phase 3 keeps every
+ * guest's playhead and buffer aligned, so all of them want segment N in the
+ * same instant, the announce coalesce plus a tracker round trip means nobody's
+ * cache is ever a useful answer for anybody else, every guest splits the host
+ * uplink evenly, and every estimator reads a fraction that never selects
+ * native - the measured, self-reinforcing 720p equilibrium. The escape is to
+ * make the caches diverge on purpose: the host deals each guest a stripe
+ * (`meshPlan`), and each guest walks a window ahead of its own live fetches,
+ * pulling only the segments it owns - the playing rung first (that dedupe is
+ * what frees the host's uplink: each segment now leaves the host once, not
+ * once per guest), then rep 0 (that is what breaks the equilibrium: native
+ * bytes enter the mesh without waiting for any guest's ABR to select native),
+ * then audio. By the time the room's aligned live fetches arrive, the owner
+ * has held and announced the segment for several seconds, so the tracker
+ * finally has an answer and the aligned demand lands on peers. Shaka is not
+ * steered anywhere (4.2 stands: no AbrManager, restrictions untouched) - its
+ * estimator simply starts measuring peer-served fetches instead of a quarter
+ * of the host, and upshifts by itself. Prefetch runs only while our own
+ * buffer is healthy, so it spends only genuine headroom, and every prefetch
+ * rides the ordinary fetch path below - peer first, host always - so the
+ * invariant above is untouched: a wrong, stale or missing plan costs
+ * duplicate host fetches, never a segment.
  */
 
 import type { SegmentFetcher } from '$lib/media/shaka/scheme';
+import { NATIVE_REP, SEGMENT_TARGET_SEC } from '$lib/media/types';
 import { INIT_SEGMENT, parseSegKey, segKey, type Track } from '$lib/protocol/control';
 import type { PeerLink, PeerNetwork } from '$lib/rtc/connection';
 
@@ -51,6 +76,19 @@ export const ANNOUNCE_MIN_MS = 1000;
 /** How long a tracker answer is worth acting on before we ask again. */
 export const SOURCE_TTL_MS = 15_000;
 
+/**
+ * How long "nobody has this" is worth believing. Much shorter than
+ * SOURCE_TTL_MS, and the difference is load-bearing for the prefetcher: an
+ * owner fills its stripe just ahead of the room's aligned fetches, so a
+ * segment's holder routinely appears BETWEEN our last ask and our fetch. Under
+ * one shared TTL the empty answer blinds us for 15s and every fetch the
+ * prefetcher set up for a peer lands on the host anyway. Re-asking empties
+ * every few seconds keeps the last ask inside the announce-to-fetch gap;
+ * non-empty answers keep the long TTL, since a claim only goes bad by
+ * eviction, which PeerMiss already handles.
+ */
+export const EMPTY_SOURCE_TTL_MS = 4000;
+
 /** Segments ahead of the current request to ask the tracker about, in one query. */
 export const SOURCE_LOOKAHEAD = 8;
 
@@ -74,6 +112,56 @@ export const MIN_PEER_BPS = 250_000;
  * bootstrap. This is the guess that buys the sample which replaces it.
  */
 export const OPTIMISTIC_BPS = 2_000_000;
+
+/**
+ * How far past our own live fetch edge the prefetcher starts, in segments.
+ *
+ * The gap is what hides the announce and tracker latency, and its floor is set
+ * by the ask cadence: a consumer's last tracker ask for a segment lands up to
+ * EMPTY_SOURCE_TTL_MS before its fetch, so the owner must have finished and
+ * announced (ANNOUNCE_MIN_MS) before then, or the consumer fetches from the
+ * host with the bytes sitting one hop away. Three segments is ~12s at the 4s
+ * target: ~5s of hard floor, the rest slack for the prefetch's own download
+ * time under contention.
+ */
+export const PREFETCH_MARGIN = 3;
+
+/**
+ * Window depth in segments. Bounded so a stalled playhead stops the prefetcher
+ * rather than letting it walk the whole film, and sized against the CACHE'S
+ * LIFETIME, not just its bytes: at native bitrates the LRU holds roughly 40s
+ * of combined live-plus-prefetch inflow, so a window much deeper than that has
+ * its early pulls evicted before the room consumes them -- bytes the host paid
+ * to send twice, and stale tracker claims (a consumer's sources entry lives
+ * SOURCE_TTL_MS) that end in PeerMiss. Eight segments is ~32s of media,
+ * comfortably inside the span.
+ */
+export const PREFETCH_DEPTH = 8;
+
+/**
+ * Prefetch only while our own buffer is at least this many seconds deep.
+ *
+ * This is the governor that makes prefetch spend only genuine headroom: if the
+ * room cannot even sustain the current rung, buffers sag, prefetch stops, and
+ * the uplink goes back to live traffic in full. Comfortably above the Phase 3
+ * barrier's thresholds and below a full buffer (config.ts BUFFERING_GOAL_SEC),
+ * so a healthy room prefetches and a struggling one never does.
+ */
+export const PREFETCH_MIN_BUFFER_S = 10;
+
+/**
+ * A key the prefetcher has already attempted -- delivered, failed, or since
+ * evicted -- is not attempted again for this long. Attempts, not failures:
+ * `cache.has` cannot be the only dedupe, because the LRU may evict a
+ * speculative segment before it is consumed, and a prefetcher that re-pulls
+ * whatever eviction uncovers turns the cache budget into a permanent refetch
+ * loop against the host (measured: it emptied every cache faster than guests
+ * could use them and zeroed the mesh entirely). An evicted speculation is a
+ * loss the live path absorbs, not a debt to repay. Longer than a window's
+ * transit past the edge (PREFETCH_DEPTH segments at the 4s target), so a key
+ * ages out of the window before it ages out of this memory.
+ */
+const PREFETCH_TRIED_TTL_MS = 120_000;
 
 /** Backoff for a peer that timed out or lied, doubling per strike. */
 const PENALTY_BASE_MS = 5000;
@@ -109,6 +197,8 @@ export type MeshStats = {
 	uploadedTo: Record<string, number>;
 	/** Peer fetches that fell back to the host. Non-zero is normal; growing is not. */
 	fallbacks: number;
+	/** Bytes pulled ahead of need by the fetch-diversity prefetcher. */
+	prefetched: number;
 };
 
 export type MeshOptions = {
@@ -126,6 +216,21 @@ export type Mesh = {
 	serve(peerId: string, repId: number, track: Track, segIdx: number): Uint8Array | null;
 	/** Publish what we hold to the tracker. Coalesced to at most one send per second. */
 	announce(): void;
+	/**
+	 * The host's `meshPlan`: prefetch the segments where `segIdx % of === slot`,
+	 * covering every rung in `rungs` (what the room is playing right now) plus
+	 * rep 0. Guest-side only. Idempotent, and safe to apply late or never -
+	 * without a plan the mesh is exactly the reactive Phase 5 mesh it always
+	 * was.
+	 */
+	setPlan(slot: number, of: number, rungs: number[]): void;
+	/**
+	 * Our own buffered seconds, from the guest's status tick. The prefetcher's
+	 * throttle: below PREFETCH_MIN_BUFFER_S it stands down entirely.
+	 */
+	noteHealth(bufferedAheadSec: number): void;
+	/** The film's length, so the prefetcher stops at the last segment. */
+	noteDuration(durationSec: number): void;
 	/** Host-side tracker bookkeeping: `keys` is peerId's complete cache, not a delta. */
 	handleHave(peerId: string, keys: string[]): void;
 	/** Host-side tracker answer. Only peers that are still connected. */
@@ -290,7 +395,32 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let fromHost = 0;
 	let uploaded = 0;
 	let fallbacks = 0;
+	let prefetched = 0;
 	let closed = false;
+
+	// ---- prefetch state (see the header's FETCH DIVERSITY) -------------------
+
+	let plan: { slot: number; of: number; rungs: number[] } | null = null;
+	/** The segIdx of the most recent LIVE video fetch, i.e. where Shaka is. */
+	let liveEdge = -1;
+	/** The rung those live fetches are asking for. */
+	let liveRep: number | null = null;
+	/** Whether this film has audio at all, learned from the traffic itself. */
+	let sawAudio = false;
+	let health = 0;
+	let maxSegIdx = Number.POSITIVE_INFINITY;
+	let prefetchBusy = false;
+	const prefetchAbort = new AbortController();
+	/** key -> when it was attempted. See PREFETCH_TRIED_TTL_MS for why attempts. */
+	const prefetchTried = new Map<string, number>();
+	/**
+	 * The prefetch currently in flight, so a live fetch for the same key rides
+	 * it instead of starting a second full download. Under the criterion's
+	 * contended uplink a native segment trickles for tens of seconds, and the
+	 * playhead can reach it mid-transfer; without this the owner then pays for
+	 * the same megabytes twice, on the one link that has none to spare.
+	 */
+	const prefetchInFlight = new Map<string, Promise<Uint8Array>>();
 
 	function nextReqId(): number {
 		if (reqSeq >= REQ_MAX) reqSeq = REQ_BASE;
@@ -458,7 +588,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const key = segKey(repId, track, segIdx + i);
 			if (cache.has(key) || asking.has(key)) continue;
 			const entry = table.get(key);
-			if (entry && now - entry.at < SOURCE_TTL_MS) continue;
+			// An empty answer goes stale on its own, shorter clock: with the
+			// prefetcher filling stripes just ahead of the room, "nobody has this"
+			// routinely becomes wrong within seconds (see EMPTY_SOURCE_TTL_MS).
+			const ttl = entry && entry.peers.length > 0 ? SOURCE_TTL_MS : EMPTY_SOURCE_TTL_MS;
+			if (entry && now - entry.at < ttl) continue;
 			want.push(key);
 		}
 		if (want.length === 0) return;
@@ -491,8 +625,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 			asking.delete(key);
 			const peers = answer[key];
 			// Every requested key gets an entry, including the empty answer: "nobody
-			// has this" is information, and it is what keeps the TTL from letting us
-			// re-ask on every fetch.
+			// has this" is information, and it is what keeps us from re-asking on
+			// every fetch -- though an empty entry earns only the short TTL above,
+			// because the prefetcher makes it false on purpose, soon.
 			rememberSources(
 				key,
 				Array.isArray(peers) ? peers.filter((p): p is string => typeof p === 'string') : []
@@ -678,6 +813,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const hit = cache.get(key);
 		if (hit) return hit;
 
+		// Ride a prefetch already downloading these bytes rather than racing it.
+		// The prefetch's own accounting covers the transfer; scheme.ts still
+		// honours this caller's abort by racing the signal over us.
+		const riding = prefetchInFlight.get(key);
+		if (riding) return riding;
+
 		// Init segments never enter the mesh: they are a couple of KB, they gate
 		// playback start, and the host is the fastest correct answer for them.
 		if (segIdx !== INIT_SEGMENT) {
@@ -720,8 +861,134 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return bytes;
 	}
 
+	/**
+	 * The fetch the Shaka scheme actually gets: notes where the player is, then
+	 * fetches. Only Shaka's own requests move the edge - the prefetcher calls
+	 * plain `fetch` below, and letting its speculative reads advance the edge
+	 * would have the window chase itself down the film.
+	 *
+	 * Assignment, not max: a seek is a new edge in either direction, and a
+	 * window stranded ahead of a backward seek prefetches a part of the film
+	 * the room just left.
+	 */
+	function liveFetch(
+		repId: number,
+		track: Track,
+		segIdx: number,
+		signal: AbortSignal
+	): Promise<Uint8Array> {
+		if (!isHost && segIdx !== INIT_SEGMENT) {
+			if (track === 'video') {
+				liveEdge = segIdx;
+				liveRep = repId;
+				kickPrefetch();
+			} else {
+				sawAudio = true;
+			}
+		}
+		return fetch(repId, track, segIdx, signal);
+	}
+
+	// ---- prefetch ------------------------------------------------------------
+
+	/**
+	 * The next owned, missing segment in the window: rung-major, nearest-first
+	 * within each rung.
+	 *
+	 * Scan order is the priority scheme, and it is rung-major on purpose: the
+	 * whole window at every rung the ROOM is playing (cheapest first, and
+	 * audio, which is nearly free) before the first speculative native byte.
+	 * Deduping what the room is fetching NOW is what frees the host's uplink,
+	 * and the freed uplink is what pays for the native seeding that follows --
+	 * so under scarcity every spent byte goes to the dedupe that unlocks more
+	 * bytes, and native waits. The interleaved order (all rungs per segment,
+	 * nearest first) read better on paper and lost to arithmetic: a ~5MB
+	 * native segment through a contended uplink blocks the next cheap dedupe
+	 * pull behind ~20s of trickle, and the dedupe never takes hold.
+	 *
+	 * The rung list is the ROOM's (`meshPlan.rungs`), not just our own,
+	 * because a split room starves on the difference: an owner covering only
+	 * its own rung leaves its stripes cold at every rung it is not playing,
+	 * the guests below fetch those from the host in aligned lockstep, and
+	 * Shaka's duration-weighted estimator reads only that slow residue -- the
+	 * measured way a guest parks at 480p while its neighbour holds native.
+	 */
+	function nextPrefetch(): { repId: number; track: Track; segIdx: number } | null {
+		if (!plan || liveEdge < 0) return null;
+		// Alone in the room there is nobody to serve and nothing to dedupe: a
+		// solo guest already has the host's whole uplink, and speculative pulls
+		// would only churn the cache against segments no one will ever ask for.
+		if (plan.of < 2) return null;
+		// Cheapest video rungs first (higher id = lower bitrate), our own rung
+		// merged in against the plan's ~1s of lag, audio next, rep 0 last.
+		const videoRungs = new Set(plan.rungs);
+		if (liveRep !== null) videoRungs.add(liveRep);
+		videoRungs.delete(NATIVE_REP);
+		const reps: { repId: number; track: Track }[] = [...videoRungs]
+			.sort((a, b) => b - a)
+			.map((repId) => ({ repId, track: 'video' as const }));
+		if (sawAudio) reps.push({ repId: NATIVE_REP, track: 'audio' });
+		reps.push({ repId: NATIVE_REP, track: 'video' });
+
+		const now = performance.now();
+		const start = liveEdge + PREFETCH_MARGIN;
+		for (const rep of reps) {
+			for (let i = 0; i < PREFETCH_DEPTH; i++) {
+				const segIdx = start + i;
+				if (segIdx > maxSegIdx) break;
+				if (segIdx % plan.of !== plan.slot) continue;
+				const key = segKey(rep.repId, rep.track, segIdx);
+				if (cache.has(key)) continue;
+				const triedAt = prefetchTried.get(key);
+				if (triedAt !== undefined && now - triedAt < PREFETCH_TRIED_TTL_MS) continue;
+				prefetchTried.delete(key);
+				return { ...rep, segIdx };
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * One prefetch in flight, ever. The prefetcher is a background scavenger of
+	 * headroom, and a single ordered channel to the host means concurrency here
+	 * would only stack speculative megabytes in front of live traffic.
+	 */
+	function kickPrefetch(): void {
+		if (closed || isHost || prefetchBusy) return;
+		if (health < PREFETCH_MIN_BUFFER_S) return;
+		const want = nextPrefetch();
+		if (!want) return;
+		prefetchBusy = true;
+		const key = segKey(want.repId, want.track, want.segIdx);
+		// Marked at the attempt, not at the outcome: success and failure are both
+		// "spent" (see PREFETCH_TRIED_TTL_MS). Insertion order is time order, so
+		// the first key is always the oldest when pruning.
+		prefetchTried.set(key, performance.now());
+		while (prefetchTried.size > MESH_CACHE_KEYS) {
+			const oldest = prefetchTried.keys().next();
+			if (oldest.done) break;
+			prefetchTried.delete(oldest.value);
+		}
+		const run = fetch(want.repId, want.track, want.segIdx, prefetchAbort.signal);
+		prefetchInFlight.set(key, run);
+		run
+			.then((bytes) => {
+				prefetched += bytes.byteLength;
+			})
+			.catch(() => {
+				// Speculation that did not pan out. The live path retries for real;
+				// the tried-memory above already keeps this from repeating (past the
+				// end of the film, that is every scan).
+			})
+			.finally(() => {
+				prefetchInFlight.delete(key);
+				prefetchBusy = false;
+				kickPrefetch();
+			});
+	}
+
 	return {
-		fetch,
+		fetch: liveFetch,
 
 		serve(peerId: string, repId: number, track: Track, segIdx: number): Uint8Array | null {
 			if (closed) return null;
@@ -733,6 +1000,33 @@ export function createMesh(opts: MeshOptions): Mesh {
 		},
 
 		announce: scheduleAnnounce,
+
+		setPlan(slot: number, of: number, rungs: number[]): void {
+			// Off the wire via guest.ts, so typed but unchecked. A nonsense plan is
+			// a plan to ignore, and no plan means the reactive mesh, which works.
+			if (closed || isHost) return;
+			if (!Number.isInteger(slot) || !Number.isInteger(of) || of < 1 || slot < 0 || slot >= of)
+				return;
+			if (!Array.isArray(rungs)) return;
+			const cleaned = [...new Set(rungs.filter((r) => Number.isInteger(r) && r >= 0))].sort(
+				(a, b) => a - b
+			);
+			plan = { slot, of, rungs: cleaned };
+			kickPrefetch();
+		},
+
+		noteHealth(bufferedAheadSec: number): void {
+			health = Number.isFinite(bufferedAheadSec) ? bufferedAheadSec : 0;
+			kickPrefetch();
+		},
+
+		noteDuration(durationSec: number): void {
+			if (!Number.isFinite(durationSec) || durationSec <= 0) return;
+			// The same soft bound ladder.ts derives: the last index a target-length
+			// grid can hold. The real grid is cut at sync samples and may end a
+			// segment or so early; the failure memory absorbs the overshoot.
+			maxSegIdx = Math.max(0, Math.ceil(durationSec / SEGMENT_TARGET_SEC) - 1);
+		},
 
 		handleHave(peerId: string, keys: string[]): void {
 			// `keys` came off a peer's control channel, and decodeControl types the
@@ -790,13 +1084,20 @@ export function createMesh(opts: MeshOptions): Mesh {
 				fromHost,
 				uploaded,
 				uploadedTo: Object.fromEntries(uploadedTo),
-				fallbacks
+				fallbacks,
+				prefetched
 			};
 		},
 
 		close(): void {
 			if (closed) return;
 			closed = true;
+			// Before anything else settles: an in-flight prefetch must reject as an
+			// abort, not fall back into a transport that is going away.
+			prefetchAbort.abort();
+			plan = null;
+			prefetchTried.clear();
+			prefetchInFlight.clear();
 			offPeer();
 			offGone();
 			for (const off of unsubs.values()) off();

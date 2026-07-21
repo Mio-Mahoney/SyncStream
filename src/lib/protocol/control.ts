@@ -169,6 +169,36 @@ export type Have = { t: 'have'; keys: string[] };
 export type SourcesReq = { t: 'sourcesReq'; reqId: number; keys: string[] };
 export type SourcesRes = { t: 'sourcesRes'; reqId: number; sources: Record<string, string[]> };
 
+/**
+ * Phase 5 fetch diversity: the host deals each guest a prefetch stripe.
+ *
+ * Phase 3 keeps every guest's playhead and buffer aligned, so left alone the
+ * room asks the host for the same segment in the same instant, four times over,
+ * and no guest's cache is ever a useful answer for another's next fetch - the
+ * measured 720p equilibrium in PLAN.md 11. The stripe is what breaks that
+ * symmetry: a guest prefetches ahead of its playhead only the segments where
+ * `segIdx % of === slot`, so each segment leaves the host once and the mesh
+ * carries it to everyone else.
+ *
+ * The host assigns it because the host is the only complete view of the room
+ * (see `Roster`): guests deriving stripes from their own peer lists would
+ * disagree, and two guests on one stripe is the duplicate fetch this exists to
+ * remove. A stale plan is harmless - ownership steers optimization only, and
+ * every fetch still falls back to the host - so this is re-dealt on every join
+ * and leave rather than negotiated.
+ *
+ * `rungs` is the set of rungs the room is currently playing, from the same
+ * status reports the readiness barrier runs on, and it exists because a stripe
+ * owner prefetching only its own rung leaves a hole exactly when the room is
+ * split: a guest already at native never pulls the 480p copies of its stripes,
+ * so the guests still below fetch those from the host in aligned lockstep, the
+ * duration-weighted ABR estimator reads only that slow residue however many
+ * instant peer fetches surround it, and the stragglers park. Owners covering
+ * every rung in play is what closes the hole; when the room converges the set
+ * collapses to [0] and the extra cost collapses with it.
+ */
+export type MeshPlan = { t: 'meshPlan'; slot: number; of: number; rungs: number[] };
+
 export type ControlMessage =
 	| Hello
 	| Rename
@@ -188,7 +218,8 @@ export type ControlMessage =
 	| Rungs
 	| Have
 	| SourcesReq
-	| SourcesRes;
+	| SourcesRes
+	| MeshPlan;
 
 export type ControlType = ControlMessage['t'];
 

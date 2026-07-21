@@ -65,7 +65,33 @@ export function configurePlayer(
 			// Gap jumping and stall detection stay at their defaults on purpose.
 			// They are the browser quirk table we adopted Shaka to avoid owning.
 		},
-		abr: { enabled: true }
+		abr: {
+			enabled: true,
+			/**
+			 * Shaka discards any response faster than this threshold as a browser
+			 * cache artifact. On HTTP that is right; here it starves the estimator
+			 * blind: under Phase 5 a mesh-served segment arrives at LAN speed from
+			 * a peer one hop away, which is a genuine measurement of a genuine
+			 * transport (scheme.ts already declares fromCache: false), not a cache
+			 * hit. Measured under the Phase 5 criterion: a guest whose fetches were
+			 * fully mesh-covered received no ABR evidence at all and sat parked on
+			 * 720p with a full buffer, forever, below an uplink that had native to
+			 * give. Zero means every delivery counts.
+			 */
+			cacheLoadThreshold: 0,
+			/**
+			 * The estimator's EWMAs weight samples by transfer DURATION, and
+			 * mesh-served segments complete in milliseconds -- honest samples that
+			 * would need many minutes of accumulated weight to move the default
+			 * half-lives (2s/5s). These are tuning values on Shaka's own estimator
+			 * (PLAN.md 4.2: configure, never reimplement), shortened so evidence
+			 * of a faster transport lifts a parked guest within a couple of
+			 * minutes. Downshifts get faster too, which for a watch party is the
+			 * safe direction: the readiness barrier makes one guest's stall
+			 * everyone's problem.
+			 */
+			advanced: { fastHalfLife: 1, slowHalfLife: 2 }
+		}
 	});
 
 	// The transport has already measured this link, so the first segment is a

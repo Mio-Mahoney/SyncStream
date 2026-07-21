@@ -264,6 +264,30 @@ recorded here and the plan text left as written.
   of scope here and recorded in PLAN.md §11 as the one open engineering gap.
   Plus `real-movie.spec.ts`: a gitignored local-film slot proving the pipeline
   on genuine content (HEVC 1080p BluRay rip: classified honestly, plays).
+
+  **Addendum (2026-07-21, the fetch-diversity pass): the gap is closed and
+  the criterion test passes.** The shape that won is host-dealt striped
+  ownership -- a generalization of both candidate shapes above: the leader,
+  per segment, with the load spread evenly -- carried by a new `meshPlan`
+  message (stripe slot, guest count, and the set of rungs the room is
+  playing), driving a per-guest prefetcher inside mesh.ts that pulls owned
+  segments ahead of the live edge, playing rungs before native, gated on the
+  guest's own buffer health. Getting from prototype to a passing criterion
+  took four measured fixes, each earned by a failed run: a short TTL on
+  empty tracker answers (a just-in-time filler makes "nobody has this" false
+  within seconds); remembering prefetch _attempts_ so LRU eviction cannot
+  turn the cache budget into a refetch loop against the host; a
+  progress-based host-fetch deadline (a flat 15s timer killed contended ~5MB
+  native segments seconds short of done and burned the uplink on abandoned
+  bytes); and telling Shaka's estimator that millisecond mesh deliveries are
+  a real transport, not cache noise (`abr.cacheLoadThreshold: 0`, shortened
+  EWMA half-lives -- §4.2-legal configuration, not an AbrManager). One
+  tooling correction fell out: the Playwright port is now env-overridable
+  (PW_PORT), because `reuseExistingServer` on a fixed port had this
+  worktree's suite silently testing a _different checkout's_ preview server
+  -- three runs of zeroed mesh stats against code that was never running.
+  PLAN.md §7/§11 carry the full mechanism and measurements.
+
 - **2.2 - was already fixed** on `main` before this plan was written
   (`4d5477e` replaced the frame-count threshold with the state-transition
   oracle). Struck.

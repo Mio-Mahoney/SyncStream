@@ -3,23 +3,26 @@ import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { fixture, openGuest, openHost, snapshot, throttle, until, videoTime } from './helpers';
 
 /**
- * PLAN.md Phase 5's acceptance criterion, run for the first time -- and the
- * measurement that showed it does not hold (PLAN.md §11).
+ * PLAN.md Phase 5's acceptance criterion, and the measurement history behind
+ * it (PLAN.md §11).
  *
  * The arithmetic the criterion was built on: native is ~9.7 Mbps, so four
  * guests are ~39 Mbps of demand against a 12 Mbps host uplink, impossible
- * unless guests serve each other. What actually happens (telemetry,
- * 2026-07-21): the mesh moves tens of MB guest-to-guest during the startup
- * buffer fill, then goes silent. Phase 3 keeps every playhead synced and every
- * buffer equally full, so all four guests want segment N within the same
- * instant, and the announce coalesce (≤1s) plus a tracker round trip means no
- * guest's cache is ever a useful answer for another's next fetch. Each
- * estimator then reads only its ~3 Mbps share of the host uplink, no guest
- * ever selects native, no native segment enters the mesh, and the room
- * settles into a self-reinforcing 720p equilibrium: zero stalls, full
- * buffers, and a criterion the design cannot currently meet. Escaping it
- * needs designed fetch diversity (e.g. staggered lookahead or a leader that
- * pulls native for the room), which is Phase 5 work that does not exist yet.
+ * unless guests serve each other. The first run (2026-07-21) showed the
+ * reactive mesh could not meet it: Phase 3 keeps every playhead synced and
+ * every buffer equally full, so all four guests want segment N within the
+ * same instant, the announce coalesce (≤1s) plus a tracker round trip means
+ * no guest's cache is ever a useful answer for another's next fetch, each
+ * estimator reads only its ~3 Mbps share of the host uplink, and the room
+ * parks in a self-reinforcing 720p equilibrium.
+ *
+ * The escape is the fetch-diversity prefetcher (mesh.ts, FETCH DIVERSITY):
+ * the host deals each guest a stripe plus the room's rung set (`meshPlan`),
+ * and each guest pulls its owned segments ahead of the room's aligned
+ * fetches -- every playing rung first, so live traffic dedupes down to one
+ * host copy, then rep 0, which is how native bytes enter the mesh before any
+ * ABR selects native. The criterion test below passed for the first time the
+ * day that landed, measured on this rig at ~3.3 minutes to four-way native.
  *
  * Throttling is the app's own uplink shaper: §11 records that CDP cannot
  * shape SCTP. Generate the fixture with: bash tests/fixtures/gen.sh --large
@@ -131,17 +134,16 @@ test.describe(() => {
 	});
 
 	/**
-	 * The criterion itself, kept running and expected to fail: the day Phase 5
-	 * work gives the room fetch diversity, this flips to "unexpected pass" and
-	 * forces its own promotion to a plain test. Until then it fails in ~3
-	 * minutes on the first guest that parks below native, which is the
-	 * documented equilibrium above.
+	 * The criterion itself. It ran as an expected failure while the 720p
+	 * equilibrium stood; the fetch-diversity prefetcher flipped it, and its
+	 * promotion to a plain test is the promotion this file's header comment
+	 * always promised. Every guest must not merely touch native but be seen
+	 * playing on it.
 	 */
-	test('PHASE 5 CRITERION (open): four guests hold native past the host uplink', async ({
+	test('PHASE 5 CRITERION: four guests hold native past the host uplink', async ({
 		page,
 		browser
 	}) => {
-		test.fail(true, 'the 720p equilibrium: see the header comment and PLAN.md §11');
 		const { guests, contexts } = await openRoomOfFour(page, browser);
 		await page.getByTestId('play').click();
 

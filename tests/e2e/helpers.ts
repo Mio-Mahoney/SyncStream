@@ -56,6 +56,7 @@ export type Snapshot = {
 		uploaded: number;
 		uploadedTo: Record<string, number>;
 		fallbacks: number;
+		prefetched: number;
 	} | null;
 };
 
