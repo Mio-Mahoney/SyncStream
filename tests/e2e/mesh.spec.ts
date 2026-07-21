@@ -21,8 +21,20 @@ import { fixture, openGuest, openHost, snapshot, throttle, until, videoTime } fr
  * and each guest pulls its owned segments ahead of the room's aligned
  * fetches -- every playing rung first, so live traffic dedupes down to one
  * host copy, then rep 0, which is how native bytes enter the mesh before any
- * ABR selects native. The criterion test below passed for the first time the
- * day that landed, measured on this rig at ~3.3 minutes to four-way native.
+ * ABR selects native. That carried the criterion to a pass for the first
+ * time, in ~3.3 minutes to four-way native on this rig.
+ *
+ * MEASURED PASS RATE: 2 of 3 on the reverted-estimator build. The one
+ * failure is characterised, not mysterious, and it is NOT the old
+ * equilibrium: the parked guest reported `rung 1` with
+ * `bandwidthEstimate` 3.6 Mbps against a host-link throughput of 3.4 Mbps,
+ * i.e. an estimator reading its link correctly at almost exactly its 1/4
+ * share of the uplink. Native at 9.5 Mbps is honestly unaffordable on that
+ * evidence, so Shaka is right to refuse it. What is missing is mesh
+ * COVERAGE of that guest's live fetches, which is a different problem from
+ * the one this prefetcher solved and is the open Phase 5 item. Do not
+ * "fix" it by making the estimator more optimistic -- see the note in
+ * shaka/config.ts for what that cost when it was tried.
  *
  * Throttling is the app's own uplink shaper: §11 records that CDP cannot
  * shape SCTP. Generate the fixture with: bash tests/fixtures/gen.sh --large

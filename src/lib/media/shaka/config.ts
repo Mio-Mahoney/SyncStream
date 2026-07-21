@@ -65,33 +65,30 @@ export function configurePlayer(
 			// Gap jumping and stall detection stay at their defaults on purpose.
 			// They are the browser quirk table we adopted Shaka to avoid owning.
 		},
-		abr: {
-			enabled: true,
-			/**
-			 * Shaka discards any response faster than this threshold as a browser
-			 * cache artifact. On HTTP that is right; here it starves the estimator
-			 * blind: under Phase 5 a mesh-served segment arrives at LAN speed from
-			 * a peer one hop away, which is a genuine measurement of a genuine
-			 * transport (scheme.ts already declares fromCache: false), not a cache
-			 * hit. Measured under the Phase 5 criterion: a guest whose fetches were
-			 * fully mesh-covered received no ABR evidence at all and sat parked on
-			 * 720p with a full buffer, forever, below an uplink that had native to
-			 * give. Zero means every delivery counts.
-			 */
-			cacheLoadThreshold: 0,
-			/**
-			 * The estimator's EWMAs weight samples by transfer DURATION, and
-			 * mesh-served segments complete in milliseconds -- honest samples that
-			 * would need many minutes of accumulated weight to move the default
-			 * half-lives (2s/5s). These are tuning values on Shaka's own estimator
-			 * (PLAN.md 4.2: configure, never reimplement), shortened so evidence
-			 * of a faster transport lifts a parked guest within a couple of
-			 * minutes. Downshifts get faster too, which for a watch party is the
-			 * safe direction: the readiness barrier makes one guest's stall
-			 * everyone's problem.
-			 */
-			advanced: { fastHalfLife: 1, slowHalfLife: 2 }
-		}
+		/**
+		 * Left at Shaka's defaults, deliberately, including `cacheLoadThreshold`
+		 * and the estimator half-lives.
+		 *
+		 * A previous pass lowered `cacheLoadThreshold` to 0 to "let mesh
+		 * deliveries count". That was a misreading worth recording so it is not
+		 * repeated: the default is 5ms, and a real peer-served segment is
+		 * megabytes over a data channel, which takes tens to hundreds of
+		 * milliseconds and was never being discarded. The only things under the
+		 * threshold are the mesh's own LOCAL cache hits -- which the Phase 5
+		 * prefetcher makes common by design, and which are not bandwidth evidence
+		 * at all. Counting them injects samples of `8000 * bytes / ~2ms`, i.e.
+		 * tens of Gbps, and at a shortened half-life one such sample can move a
+		 * guest's estimate by ~28 Mbps on its own. The estimator would then be
+		 * promising a capacity nothing measured, which under the readiness
+		 * barrier is one guest's overshoot becoming the whole room's stall.
+		 *
+		 * Mesh deliveries reach the estimator the honest way instead: a live
+		 * fetch served by a peer IS a real transfer through the scheme handler
+		 * and is sampled like any other. Only the prefetcher's own transfers are
+		 * invisible to Shaka, and the answer to that is to show it those
+		 * transfers (see the note in mesh.ts), never to revalue cache hits.
+		 */
+		abr: { enabled: true }
 	});
 
 	// The transport has already measured this link, so the first segment is a
@@ -175,6 +172,21 @@ export function playerBufferAhead(player: shaka.Player, video: HTMLMediaElement)
 	}
 	// The playhead sits in a gap: honestly zero, which is what a stall is.
 	return 0;
+}
+
+/**
+ * What Shaka's ABR estimator currently believes the link can carry, bits/sec.
+ *
+ * The rung a guest plays is a function of this number and nothing else, so
+ * without it "the guest parked below native" is unfalsifiable: a starved
+ * estimator, an honest reading of a slow link, and a rung restriction all look
+ * identical from outside. Phase 5 turned that from an inconvenience into a
+ * blind spot, because the mesh's whole purpose is to change what the link can
+ * carry without changing what Shaka is asked.
+ */
+export function bandwidthEstimate(player: shaka.Player): number {
+	const est = player.getStats().estimatedBandwidth;
+	return Number.isFinite(est) ? est : 0;
 }
 
 /** The active variant's rung, i.e. its MPD RepresentationID. */

@@ -8,6 +8,7 @@
  */
 
 import {
+	bandwidthEstimate,
 	configurePlayer,
 	createPlayer,
 	currentRung,
@@ -516,6 +517,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		const rung = currentRung(player);
 		stats.bufferedAhead = bufferedAhead;
 		stats.rung = rung;
+		stats.bandwidthEstimate = bandwidthEstimate(player);
 		stats.rtt = clock.rtt;
 		stats.clockOffset = clock.offset;
 		stats.drift = sync.drift;

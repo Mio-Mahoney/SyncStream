@@ -265,28 +265,39 @@ recorded here and the plan text left as written.
   Plus `real-movie.spec.ts`: a gitignored local-film slot proving the pipeline
   on genuine content (HEVC 1080p BluRay rip: classified honestly, plays).
 
-  **Addendum (2026-07-21, the fetch-diversity pass): the gap is closed and
-  the criterion test passes.** The shape that won is host-dealt striped
-  ownership -- a generalization of both candidate shapes above: the leader,
-  per segment, with the load spread evenly -- carried by a new `meshPlan`
-  message (stripe slot, guest count, and the set of rungs the room is
-  playing), driving a per-guest prefetcher inside mesh.ts that pulls owned
-  segments ahead of the live edge, playing rungs before native, gated on the
-  guest's own buffer health. Getting from prototype to a passing criterion
-  took four measured fixes, each earned by a failed run: a short TTL on
-  empty tracker answers (a just-in-time filler makes "nobody has this" false
-  within seconds); remembering prefetch _attempts_ so LRU eviction cannot
-  turn the cache budget into a refetch loop against the host; a
-  progress-based host-fetch deadline (a flat 15s timer killed contended ~5MB
-  native segments seconds short of done and burned the uplink on abandoned
-  bytes); and telling Shaka's estimator that millisecond mesh deliveries are
-  a real transport, not cache noise (`abr.cacheLoadThreshold: 0`, shortened
-  EWMA half-lives -- §4.2-legal configuration, not an AbrManager). One
-  tooling correction fell out: the Playwright port is now env-overridable
-  (PW_PORT), because `reuseExistingServer` on a fixed port had this
-  worktree's suite silently testing a _different checkout's_ preview server
-  -- three runs of zeroed mesh stats against code that was never running.
-  PLAN.md §7/§11 carry the full mechanism and measurements.
+  **Addendum (2026-07-21, the fetch-diversity pass): the equilibrium is
+  broken and the criterion passes 2 of 3 runs.** The shape that won is
+  host-dealt striped ownership -- a generalization of both candidate shapes
+  above: the leader, per segment, with the load spread evenly -- carried by a
+  new `meshPlan` message (stripe slot, guest count, and the set of rungs the
+  room is playing), driving a per-guest prefetcher inside mesh.ts that pulls
+  owned segments ahead of the live edge, playing rungs before native, gated
+  on the guest's own buffer health. Three measured fixes got it there, each
+  earned by a failed run: a short TTL on empty tracker answers (a
+  just-in-time filler makes "nobody has this" false within seconds);
+  remembering prefetch _attempts_ so LRU eviction cannot turn the cache
+  budget into a refetch loop against the host; and a progress-based
+  host-fetch deadline (a flat 15s timer killed contended ~5MB native
+  segments seconds short of done and burned the uplink on abandoned bytes).
+
+  A fourth change -- lowering `abr.cacheLoadThreshold` to 0 and shortening
+  the estimator half-lives -- was **tried, measured, and reverted**. The
+  premise was wrong (the 5ms default only ever excluded the mesh's own local
+  cache hits, which are not bandwidth evidence), and counting those injects
+  tens-of-Gbps phantom samples. It broke the Phase 3 barrier-recovery test
+  outright; reverted, that test passes 3/3. The full history is in PLAN.md
+  §11, kept because the reasoning is an inviting trap.
+
+  Two things this leaves open, both honestly measured rather than assumed:
+  the criterion's remaining 1-in-3 failure is mesh **coverage**, not
+  estimator blindness (the parked guest reads 3.6 Mbps against a 3.4 Mbps
+  host link -- correct, just uncovered), and the pre-existing nostr join
+  flake accounts for 4 of 5 failures in a full-suite run, all in setup with
+  `iceState: "new"`. One tooling correction fell out: the Playwright port is
+  now env-overridable (PW_PORT), because `reuseExistingServer` on a fixed
+  port had this worktree's suite silently testing a _different checkout's_
+  preview server -- three runs of zeroed mesh stats against code that was
+  never running. PLAN.md §7/§11 carry the full mechanism and measurements.
 
 - **2.2 - was already fixed** on `main` before this plan was written
   (`4d5477e` replaced the frame-count threshold with the state-transition

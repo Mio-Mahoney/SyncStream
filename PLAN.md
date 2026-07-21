@@ -551,20 +551,42 @@ retired by construction:
   collapses live demand to one host copy per segment), then rep 0 (which is
   how native bytes enter the mesh before any guest's ABR selects native),
   gated on the guest's own buffer health so it spends only genuine headroom.
-  Four measured failure modes shaped the mechanism, each now a comment at its
+  Three measured failure modes shaped the mechanism, each now a comment at its
   fix: empty tracker answers must age fast (EMPTY_SOURCE_TTL_MS) or a
   just-in-time filler is invisible; prefetch attempts, not successes, must be
-  remembered or LRU eviction turns the cache budget into a refetch loop; the
-  guest's host-fetch deadline must be progress-based or contended ~5MB native
-  segments die seconds short of done; and Shaka's estimator must be told that
-  millisecond mesh deliveries are a real transport, not cache artifacts
-  (abr.cacheLoadThreshold 0, shortened EWMA half-lives -- configuration on
-  Shaka's own estimator, which §4.2 permits, not an AbrManager, which it
-  forbids). Measured result: all four guests reach and hold the ~9.5 Mbps
-  native rung over the 12 Mbps uplink -- arithmetically impossible without
-  guests serving guests -- and the criterion test now runs as a plain
-  passing test. The companion test locks in the floor (zero stalls, mesh
-  bytes flowing, zero fallbacks, contiguous ladder) as before.
+  remembered or LRU eviction turns the cache budget into a refetch loop; and
+  the guest's host-fetch deadline must be progress-based, or contended ~5MB
+  native segments die seconds short of done while live traffic starves behind
+  them. Measured result: four guests reach and hold the ~9.5 Mbps native rung
+  over a 12 Mbps uplink -- arithmetically impossible without guests serving
+  guests -- on **2 of 3 runs**. The companion test locks in the floor (zero
+  stalls, mesh bytes flowing, zero fallbacks, contiguous ladder).
+
+  A fourth "fix" was tried, measured, and reverted, and it is recorded here
+  because the reasoning is a trap. Believing the estimator was blind to mesh
+  deliveries, a pass set `abr.cacheLoadThreshold` to 0 and shortened the
+  estimator's EWMA half-lives. The premise was wrong: the 5ms default never
+  discarded real peer transfers, which are megabytes over a data channel and
+  take tens to hundreds of milliseconds. All it excluded were the mesh's own
+  LOCAL cache hits -- which the prefetcher makes common by design, and which
+  are not bandwidth evidence at all. Counting them injects samples of
+  `8000 * bytes / ~2ms`, tens of Gbps, enough for a single hit to move a
+  guest's estimate by ~28 Mbps. It broke Phase 3: a throttled guest promised
+  gigabits never came back down, and `room.spec.ts`'s barrier-recovery case
+  went from passing in seconds to exceeding a 120s timeout. Reverted to
+  Shaka's defaults, that test passes 3/3.
+
+  The remaining 1-in-3 criterion failure is characterised, and it is a
+  different problem from the equilibrium: the parked guest reported
+  `bandwidthEstimate` 3.6 Mbps against a 3.4 Mbps host link, which is
+  *correct*. It is not being lied to, and it is not blind; it is genuinely
+  not being covered by the mesh, so native is honestly unaffordable on its
+  evidence. Closing that is mesh **coverage** work. If the estimator ever
+  does need more evidence, the honest route is to issue the prefetcher's real
+  transfers through Shaka's own NetworkingEngine -- which feeds
+  `segmentDownloaded` for any non-cached segment response
+  (`networking_engine.js`, the `!response.fromCache` branch) -- never to
+  revalue cache hits.
 - **The Shaka `restrictions` wrinkle was live, not latent, and is retired by
   construction.** It was the throttled-ladder flake: the ladder warmed
   cheapest-first, so every intermediate advertised set had 720p as a hole in
