@@ -19,7 +19,7 @@
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
 	import { startGuestRoom, type GuestRoom } from '$lib/room/guest';
-	import { RendezvousError, strategyFromParams } from '$lib/rendezvous/room';
+	import { RendezvousError, STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
 	import { isValidRoomCode } from '$lib/rendezvous/codes';
 
 	// Reactive because the control bar takes it as a prop: bind:this only assigns
@@ -292,6 +292,11 @@
 			name,
 			origin: page.url.origin,
 			code,
+			// The same `?s=` a guest reads, honoured for the host too: it is how
+			// the e2e suite pins a room to the localhost relay (PLAN.md 4.6's
+			// escape hatch), and on the public strategies it merely reorders the
+			// announce priority.
+			strategy: strategyFromParams(page.url.searchParams),
 			signal,
 			onSource: ({ objectUrl, title }) => {
 				// A directly-playable file plays off disk; a transcoded one is
@@ -323,12 +328,15 @@
 		opened = true;
 		if (host.code !== code) {
 			// A collision was resolved by regenerating. Keep the address bar
-			// honest so a reload re-hosts the room that actually exists.
+			// honest so a reload re-hosts the room that actually exists -- on the
+			// same strategy, which the reload can only learn from the URL.
 			const path = resolve('/room/[id]', { id: host.code });
+			const strategy = strategyFromParams(page.url.searchParams);
+			const query = strategy ? `?create=1&${STRATEGY_PARAM}=${strategy}` : '?create=1';
 			// The path IS resolved. The rule only recognises a bare resolve() call
 			// and cannot see through appending a query string to one.
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
-			replaceState(`${path}?create=1`, {});
+			replaceState(`${path}${query}`, {});
 		}
 	}
 

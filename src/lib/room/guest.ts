@@ -313,21 +313,47 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			.catch((err: Error) => opts.onError(err));
 	};
 
+	/**
+	 * Peers whose hello has reached us, so the reply below happens once per
+	 * link. Cleared when the peer goes, because a peer that reconnects is a
+	 * fresh link doing the handshake over.
+	 */
+	const helloSeen = new Set<string>();
+
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
 		// Anything below this line is authoritative, so it must come from the
 		// host and nobody else.
 		const fromHost = hostLink !== null && link.peerId === hostLink.peerId;
 
 		switch (msg.t) {
-			case 'hello':
+			case 'hello': {
+				// The first hello from a peer is answered with ours. Our channels
+				// are negotiated (channel.ts): they open the moment SCTP is up,
+				// whether or not the remote has created its half, and anything sent
+				// into that gap is silently discarded -- so the single hello sent
+				// from onPeer can be lost to a peer that attached a beat later.
+				// Both directions cannot lose it (each side only sends after
+				// attaching its own channels, so mutual loss is a contradiction in
+				// the timeline), which makes answering the surviving direction a
+				// complete repair. Guarded to the first, so two peers answering
+				// each other terminate instead of ping-ponging.
+				const first = !helloSeen.has(link.peerId);
+				helloSeen.add(link.peerId);
+				if (first) link.channels.sendControl({ t: 'hello', role: 'guest', name });
 				updatePeer(link.peerId, { name: msg.name, role: msg.role });
 				if (msg.role === 'host') {
-					hostLink = link;
+					// A repeated hello from the same host (the answer above is one
+					// source; the probe-and-real handlers on the host are another)
+					// must not rebuild the mesh under the one already announcing.
+					if (hostLink !== link) {
+						hostLink = link;
+						mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
+					}
 					stats.candidateType = link.candidateType;
-					mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
 					opts.onHostName(msg.name);
 				}
 				break;
+			}
 
 			// Only the host's own name is ours to render. Another guest's reaches us
 			// through the host's roster, which is the only complete view of the room
@@ -413,6 +439,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	});
 
 	net.onPeerGone((peerId) => {
+		helloSeen.delete(peerId);
 		removePeer(peerId);
 		if (hostLink?.peerId === peerId) {
 			// PLAN.md Phase 1: the room exists while the host is connected.

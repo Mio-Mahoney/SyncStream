@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import {
 		generateRoomCode,
 		isValidRoomCode,
@@ -9,18 +10,37 @@
 		roomCodeFromLink,
 		CODE_LENGTH
 	} from '$lib/rendezvous/codes';
+	import { STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
 
 	let roomCode = $state('');
 	let error = $state('');
 
 	const canJoin = $derived(isValidRoomCode(roomCode));
 
+	/**
+	 * A valid `?s=` on this page rides along to the room, as `&s=...` or
+	 * `?s=...` per what precedes it. The room page is where the strategy is
+	 * read, and this page sits in front of it: without the forward, opening the
+	 * app with a strategy pinned (the e2e suite pinning `local`, or someone
+	 * reproducing a relay bug with `nostr`) would shed it on the first click.
+	 * Validated rather than passed through, so a garbage value dies here
+	 * instead of riding into every URL the room mints.
+	 */
+	function strategyCarry(hasQuery: boolean): string {
+		const s = strategyFromParams(page.url.searchParams);
+		return s ? `${hasQuery ? '&' : '?'}${STRATEGY_PARAM}=${s}` : '';
+	}
+
 	function join() {
 		if (!canJoin) {
 			error = `Room codes are ${CODE_LENGTH} characters.`;
 			return;
 		}
-		goto(resolve('/room/[id]', { id: roomCode }));
+		const path = resolve('/room/[id]', { id: roomCode });
+		// The path IS resolved. The rule only recognises a bare resolve() call and
+		// cannot see through appending a query string to one.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		goto(`${path}${strategyCarry(false)}`);
 	}
 
 	function createRoom() {
@@ -33,7 +53,7 @@
 		// The path IS resolved. The rule only recognises a bare resolve() call and
 		// cannot see through appending a query string to one.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		goto(`${path}?create=1`);
+		goto(`${path}?create=1${strategyCarry(true)}`);
 	}
 
 	/**
