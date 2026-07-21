@@ -11,9 +11,11 @@ import { appPath } from './base';
  */
 
 test('a guest whose room has no host is told so, and given a way out', async ({ page }) => {
-	// Nobody is hosting this. Rendezvous walks its whole ladder before saying
-	// so, which is where the 20s-per-strategy budget goes.
-	await page.goto(appPath('/room/K7M4PQ'));
+	// Nobody is hosting this. Rendezvous exhausts its strategy budget before
+	// saying so. Pinned to the localhost relay: the claim is about the failure
+	// screen, and a room with no host fails identically on any strategy -- the
+	// public ladder's own walk is rendezvous.spec.ts's job.
+	await page.goto(appPath('/room/K7M4PQ?s=local'));
 
 	const waiting = page.getByTestId('waiting-room');
 	await expect(waiting).toHaveAttribute('data-phase', 'searching');
@@ -59,7 +61,7 @@ test('a broken code is a dead end for a would-be host too', async ({ page }) => 
 });
 
 test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
-	await page.goto(appPath('/room/K7M4PQ'));
+	await page.goto(appPath('/room/K7M4PQ?s=local'));
 	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'failed', {
 		timeout: 60_000
 	});
@@ -74,9 +76,11 @@ test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
 test('a host whose room will not open is told so, and given a way out', async ({ page }) => {
 	// Every relay dead. The host's rendezvous walks its whole ladder and throws
 	// the same RendezvousError a guest's failed join does -- which the page used
-	// to route, for a host only, straight into the raw error banner.
+	// to route, for a host only, straight into the raw error banner. Pinned to
+	// the localhost relay so this never dials the public ones only to have the
+	// route kill the connection anyway.
 	await page.routeWebSocket(/.*/, (ws) => ws.close());
-	await page.goto(appPath('/?debug=1'));
+	await page.goto(appPath('/?debug=1&s=local'));
 	await page.getByText('Create room').click();
 
 	const waiting = page.getByTestId('waiting-room');
@@ -129,7 +133,7 @@ test('a host waiting for their room to open is told so, and shown no code yet', 
 			);
 		}, 20);
 	});
-	await page.goto(appPath('/'));
+	await page.goto(appPath('/?s=local'));
 	await page.getByText('Create room').click();
 
 	// Then the room is real, and so is the code.

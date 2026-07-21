@@ -16,6 +16,7 @@ import type { Origin, ProbeResult } from '$lib/media/types';
 import { createMesh, type Mesh } from '$lib/mesh/mesh';
 import { INIT_SEGMENT, type ControlMessage, type Intent } from '$lib/protocol/control';
 import { hostRoomChecked, shareLinkQuery, type HostRendezvous } from '$lib/rendezvous/room';
+import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
 import { removePeer, stats, updatePeer } from '$lib/stats.svelte';
 import { HostState, ReadinessBarrier, type BlockedPeer } from '$lib/sync/state';
@@ -55,6 +56,12 @@ export type HostRoomOptions = {
 	 * follow it.
 	 */
 	code: string;
+	/**
+	 * The `?s=` strategy from the room URL, if it carried one. 'local' pins the
+	 * announce to the localhost relay (the hermetic test path); anything else
+	 * just reorders the public ladder.
+	 */
+	strategy?: StrategyName;
 	/** Called when the origin is ready and the host can start playing locally. */
 	onSource: (o: { objectUrl: string | null; origin: Origin; title: string }) => void;
 	onError: (err: Error) => void;
@@ -102,7 +109,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			return false;
 		},
 		3,
-		{ signal: opts.signal, code: opts.code }
+		{ signal: opts.signal, code: opts.code, strategy: opts.strategy }
 	);
 
 	const net = network as unknown as PeerNetwork;
@@ -300,9 +307,30 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	const nameFrom = (peerId: string, raw: unknown): string =>
 		remoteName(raw, guestNames.get(peerId) ?? fallbackName('guest'));
 
+	/**
+	 * Peers whose hello has reached us, so the answer below happens once per
+	 * link. Not `guestNames`, which a later `status` also writes: this set is
+	 * about the handshake, and it must stay true to it.
+	 */
+	const helloSeen = new Set<string>();
+
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
 		switch (msg.t) {
 			case 'hello': {
+				// The first hello from a peer is answered with ours. The channels
+				// are negotiated (channel.ts): they open the moment SCTP is up,
+				// whether or not the remote has created its half, and anything
+				// sent into that gap is silently discarded -- so the hello sent
+				// from onPeer can be lost to a guest that attached a beat later,
+				// leaving that guest connected, receiving every broadcast, and
+				// discarding all of it for want of knowing which link is the
+				// host's. Both directions cannot lose the hello (each side sends
+				// only after attaching its own channels), so answering the one
+				// that survived repairs every case. Guarded to the first, so the
+				// two answers terminate instead of ping-ponging.
+				const first = !helloSeen.has(link.peerId);
+				helloSeen.add(link.peerId);
+				if (first) link.channels.sendControl({ t: 'hello', role: 'host', name });
 				const guestName = nameFrom(link.peerId, msg.name);
 				guestNames.set(link.peerId, guestName);
 				updatePeer(link.peerId, { name: guestName, role: msg.role });
@@ -391,6 +419,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	});
 
 	net.onPeerGone((peerId) => {
+		helloSeen.delete(peerId);
 		guestNames.delete(peerId);
 		barrier.remove(peerId);
 		removePeer(peerId);

@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { BASE } from './tests/e2e/base';
+import { BASE, LOCAL_RELAY_PORT, LOCAL_RELAY_URL } from './tests/e2e/base';
 
 /**
  * PLAN.md 8.
@@ -76,14 +76,30 @@ export default defineConfig({
 	 * file server with no backend process running. `vite preview` only serves
 	 * files out of build/; `tests/e2e/static.spec.ts` asserts the build contains
 	 * no server entry point at all.
+	 *
+	 * The second server is the localhost signaling relay for `?s=local` rooms
+	 * (tests/e2e/local-relay.ts). It is signaling infrastructure the way the
+	 * public Nostr relays are, not a backend: the static-site claim is
+	 * untouched, and the app build only knows it exists through the
+	 * VITE_LOCAL_RELAY URL baked in below. The helpers pin every room to it by
+	 * default so a public relay's bad minute cannot fail the run;
+	 * rendezvous.spec.ts is the one place the real ladder still gets walked.
 	 */
-	webServer: {
-		command: 'bun run build && bun run preview --port 4173 --strictPort',
-		port: 4173,
-		reuseExistingServer: !process.env.CI,
-		timeout: 180_000,
-		// The build and the tests must agree on the base path, or the suite
-		// navigates to paths the server does not serve.
-		env: { BASE_PATH: BASE }
-	}
+	webServer: [
+		{
+			command: 'bun run build && bun run preview --port 4173 --strictPort',
+			port: 4173,
+			reuseExistingServer: !process.env.CI,
+			timeout: 180_000,
+			// The build and the tests must agree on the base path, or the suite
+			// navigates to paths the server does not serve.
+			env: { BASE_PATH: BASE, VITE_LOCAL_RELAY: LOCAL_RELAY_URL }
+		},
+		{
+			command: 'bun tests/e2e/local-relay.ts',
+			port: LOCAL_RELAY_PORT,
+			reuseExistingServer: !process.env.CI,
+			timeout: 30_000
+		}
+	]
 });

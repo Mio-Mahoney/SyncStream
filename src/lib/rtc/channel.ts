@@ -173,6 +173,15 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 	 * registering its handler. Dropping those bytes loses `hello` and `ready`
 	 * outright -- they are each sent once -- and the guest waits forever for a
 	 * host it is already connected to.
+	 *
+	 * This buffer covers only the attached-but-not-listening half of that
+	 * window. The harsher half -- the remote has not called createDataChannel
+	 * at all yet, so SCTP discards the bytes before any object exists to
+	 * buffer them -- cannot be fixed on the receiving side, because there is
+	 * no receiving side. The hello handshake repairs it at the protocol level
+	 * instead: the first hello received on a link is answered with our own
+	 * (host.ts / guest.ts), and both directions cannot fall in the gap, since
+	 * each side only sends after attaching its own channels.
 	 */
 	let earlyControl: ControlMessage[] | null = [];
 	/** A peer cannot make us buffer without bound before we have even listened. */

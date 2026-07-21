@@ -110,12 +110,19 @@ function link(controller: AbortController, signal: AbortSignal | undefined): () 
  * different code than the one on screen would be advertising a room nobody can
  * join. The caller owns the URL, so the caller owns the code; we still draw one
  * when it does not, and still regenerate on collision.
+ *
+ * `opts.strategy` reorders the ladder the way a guest's link strategy does --
+ * and for 'local' it restricts the announce to the localhost relay alone (see
+ * strategyLadder). The URL owns it for the same reason it owns the code: a
+ * host must survive a reload, and a strategy that lived in navigation state
+ * would silently revert to the public ladder on refresh.
  */
 export async function hostRoom(opts?: {
 	signal?: AbortSignal;
 	code?: string;
+	strategy?: StrategyName;
 }): Promise<HostRendezvous> {
-	const ladder = strategyLadder();
+	const ladder = strategyLadder(opts?.strategy);
 	if (ladder.length === 0) {
 		throw new RendezvousError('rendezvous: no signaling strategy is configured');
 	}
@@ -200,7 +207,7 @@ export async function hostRoom(opts?: {
 export async function hostRoomChecked(
 	isOccupied: (r: HostRendezvous) => Promise<boolean>,
 	maxAttempts = 3,
-	opts?: { signal?: AbortSignal; code?: string }
+	opts?: { signal?: AbortSignal; code?: string; strategy?: StrategyName }
 ): Promise<HostRendezvous> {
 	const tried: string[] = [];
 
@@ -208,7 +215,11 @@ export async function hostRoomChecked(
 		opts?.signal?.throwIfAborted();
 		// Only the first attempt honours the caller's code. A collision means
 		// that exact code is taken, so retrying it would just collide again.
-		const rendezvous = await hostRoom(attempt === 0 ? opts : { signal: opts?.signal });
+		// The strategy survives the retry: a collision changes which code we
+		// announce, never where.
+		const rendezvous = await hostRoom(
+			attempt === 0 ? opts : { signal: opts?.signal, strategy: opts?.strategy }
+		);
 
 		let occupied: boolean;
 		try {

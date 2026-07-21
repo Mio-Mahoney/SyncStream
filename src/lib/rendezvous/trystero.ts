@@ -33,6 +33,14 @@ import type { Room } from '@trystero-p2p/mqtt';
 const APP_ID = 'syncstream';
 
 /**
+ * The localhost relay the 'local' strategy signals over, baked in at build
+ * time. Only the e2e web server sets it (playwright.config.ts); a deploy build
+ * leaves it undefined, which is what keeps 'local' unconfigured -- and
+ * therefore skipped, unloaded and free -- everywhere outside a test run.
+ */
+const LOCAL_RELAY_URL: string | undefined = import.meta.env.VITE_LOCAL_RELAY;
+
+/**
  * How long a strategy gets to prove its relay layer is up before the ladder
  * gives up on it. Generous enough for a cold WebSocket handshake to a public
  * relay on a slow link, short enough that a dead relay does not hold a room
@@ -229,15 +237,50 @@ const mqtt: SignalingTransport = {
 	}
 };
 
-export const transports: Record<StrategyName, SignalingTransport> = { nostr, mqtt };
+/**
+ * The localhost strategy (see local.ts for why it exists and what it reuses).
+ * The dynamic import keeps even its small adapter out of the main bundle;
+ * `isConfigured` is what guarantees it is never loaded outside a test build.
+ */
+const local: SignalingTransport = {
+	name: 'local',
+	isConfigured: () => Boolean(LOCAL_RELAY_URL),
+
+	async join(roomId, opts?: JoinOptions) {
+		const { joinLocalRoom, selfId, getLocalRelaySockets } = await import('$lib/rendezvous/local');
+		opts?.signal?.throwIfAborted();
+
+		const room = joinLocalRoom(
+			{ appId: APP_ID, rtcConfig: RTC_CONFIG, relayConfig: { urls: [LOCAL_RELAY_URL!] } },
+			roomId
+		);
+		try {
+			await awaitOpenRelay(getLocalRelaySockets, 'local', opts?.signal);
+		} catch (err) {
+			await abandon(room);
+			throw err;
+		}
+		return makeSession('local', selfId, room);
+	}
+};
+
+export const transports: Record<StrategyName, SignalingTransport> = { nostr, mqtt, local };
 
 /**
  * The configured strategies in the order they should be tried: `preferred`
  * first (the guest's link strategy, PLAN.md 4.6), then STRATEGY_ORDER.
  * Unconfigured strategies are absent rather than present-and-failing, so
  * skipping them costs no connect timeout.
+ *
+ * 'local' asked for by name is exclusive: it exists to make a run hermetic,
+ * and a ladder that quietly falls through to the public relays -- or a host
+ * that announces on them alongside it -- reintroduces exactly the
+ * nondeterminism it was selected to remove. Unconfigured, it degrades to the
+ * public ladder instead, so a stray `?s=local` link in a production build
+ * still joins the room the slow way rather than dead-ending.
  */
 export function strategyLadder(preferred?: StrategyName): SignalingTransport[] {
+	if (preferred === 'local' && local.isConfigured()) return [local];
 	const order = preferred
 		? [preferred, ...STRATEGY_ORDER.filter((n) => n !== preferred)]
 		: [...STRATEGY_ORDER];

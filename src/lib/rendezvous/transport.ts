@@ -10,7 +10,7 @@
  * The debt is never the implementation, it is the coupling.
  */
 
-export type StrategyName = 'nostr' | 'mqtt';
+export type StrategyName = 'nostr' | 'mqtt' | 'local';
 
 /**
  * Priority order from PLAN.md 4.6, minus Supabase.
@@ -25,11 +25,18 @@ export type StrategyName = 'nostr' | 'mqtt';
  * (PLAN.md 9) -- so a lossy operated channel bought nothing over the free public
  * relays. Nostr and MQTT need no account and have no quota; they are the
  * zero-cost floor that actually works.
+ *
+ * 'local' is deliberately absent: it is the localhost relay for tests and
+ * development (see local.ts), reachable only by explicit `?s=local`, and never
+ * something a production ladder should fall through to.
  */
 export const STRATEGY_ORDER: readonly StrategyName[] = ['nostr', 'mqtt'];
 
+/** Every name `?s=` may carry: the public ladder plus the localhost strategy. */
+const STRATEGY_NAMES: readonly StrategyName[] = [...STRATEGY_ORDER, 'local'];
+
 export function isStrategyName(x: unknown): x is StrategyName {
-	return typeof x === 'string' && (STRATEGY_ORDER as readonly string[]).includes(x);
+	return typeof x === 'string' && (STRATEGY_NAMES as readonly string[]).includes(x);
 }
 
 export type RendezvousSession = {

@@ -148,7 +148,10 @@ test('a name off the wire cannot wreck the room it lands in', async ({ page, con
 			return (send as (d: unknown) => void).call(this, data);
 		};
 	});
-	await guest.goto(appPath(`/room/${code}?debug=1`));
+	// `s=local` by hand: this guest cannot go through openGuest -- the forged
+	// send has to be installed before any page script runs -- so it must also
+	// say itself which relay the room is on.
+	await guest.goto(appPath(`/room/${code}?debug=1&s=local`));
 
 	await until(
 		() => snapshot(page),

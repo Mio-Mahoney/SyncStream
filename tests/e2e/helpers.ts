@@ -2,9 +2,25 @@ import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { appPath } from './base';
+import type { StrategyName } from '../../src/lib/rendezvous/transport';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const fixture = (name: string) => join(here, '..', 'fixtures', name);
+
+/**
+ * Which rendezvous strategy a helper-opened room signals over.
+ *
+ * 'local' by default: the suite runs with `retries: 0`, and a public Nostr or
+ * MQTT relay having a bad minute used to be indistinguishable from a real
+ * regression -- a guest whose hello never lands, failing whichever spec drew
+ * it. The localhost relay (tests/e2e/local-relay.ts) carries the identical
+ * trystero signaling without the shared infrastructure, so a failure on it is
+ * ours. The public ladder is still walked, deliberately and in one place:
+ * rendezvous.spec.ts, which passes 'nostr' here.
+ */
+export type StrategyOptions = { strategy?: StrategyName };
+
+const strategyParam = (opts?: StrategyOptions) => `s=${opts?.strategy ?? 'local'}`;
 
 export type Snapshot = {
 	role: 'host' | 'guest' | null;
@@ -90,10 +106,12 @@ export const videoTime = (page: Page) =>
 	});
 
 /** Opens a room as host and stops at the picker, with no file chosen yet. */
-export async function openRoom(page: Page) {
+export async function openRoom(page: Page, opts?: StrategyOptions) {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
-	await page.goto(appPath('/?debug=1'));
+	// The landing page forwards a valid `?s=` onto the room URL it mints, which
+	// is how the strategy reaches the host engine.
+	await page.goto(appPath(`/?debug=1&${strategyParam(opts)}`));
 	await page.getByText('Create room').click();
 
 	// The code renders straight from the URL, so it is visible long before
@@ -106,8 +124,8 @@ export async function openRoom(page: Page) {
 }
 
 /** Opens a room as host and picks a fixture. */
-export async function openHost(page: Page, file: string) {
-	const opened = await openRoom(page);
+export async function openHost(page: Page, file: string, opts?: StrategyOptions) {
+	const opened = await openRoom(page, opts);
 	await page.getByTestId('file-input').setInputFiles(fixture(file));
 	return opened;
 }
@@ -129,11 +147,11 @@ export async function dropFile(page: Page, file: { name: string; type: string; b
 	await page.dispatchEvent('body', 'drop', { dataTransfer: dt });
 }
 
-export async function openGuest(ctx: BrowserContext, code: string) {
+export async function openGuest(ctx: BrowserContext, code: string, opts?: StrategyOptions) {
 	const page = await ctx.newPage();
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
-	await page.goto(appPath(`/room/${code}?debug=1`));
+	await page.goto(appPath(`/room/${code}?debug=1&${strategyParam(opts)}`));
 	return { page, errors };
 }
 
