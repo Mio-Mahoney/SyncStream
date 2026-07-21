@@ -222,7 +222,9 @@ async function readMoov(file: File, iso: ISOFile): Promise<Movie> {
  * A file with very sparse keyframes gets correspondingly long segments. That is
  * the honest outcome for passthrough: cutting mid-GOP to hit a size target
  * would break seeking and rung switching, which is exactly what PLAN.md 4.1
- * forbids. Phase 4's transcode path is what fixes such a file.
+ * forbids. Phase 4's transcode path cannot fix such a file either -- encoded
+ * rungs share this grid -- so the probe rejects it before it gets here once
+ * the gap passes MAX_RAP_GAP_SEC (probe.ts).
  */
 function planByRap(samples: Sample[], targetTicks: number): SegPlan[] {
 	const plans: SegPlan[] = [];

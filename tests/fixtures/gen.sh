@@ -76,6 +76,17 @@ ffmpeg -y -loglevel error $(src_video 30 1280x720 30) \
 	$h264_common -af "pan=5.1|c0=c0|c1=c0|c2=c0|c3=c0|c4=c0|c5=c0" \
 	-c:a aac -b:a 384k -movflags +faststart surround-5.1.mp4
 
+echo "==> sparse-keyframe.mp4 - one GOP over the whole file; no seam to cut at"
+# Screen recorders and some hardware encoders emit keyframe intervals of
+# minutes. Segments cut only at sync samples and every rung shares the grid,
+# so this shape can only become a few enormous segments -- the probe must
+# reject it naming the cause, never silently produce a one-fetch stream.
+# -g past the frame count leaves exactly one sync sample: a 60s single GOP.
+# shellcheck disable=SC2046
+ffmpeg -y -loglevel error $(src_video 60 640x360 30) $(src_audio 60) \
+	-c:v libx264 -preset veryfast -pix_fmt yuv420p -g 100000 -keyint_min 100000 -sc_threshold 0 -crf 40 \
+	-c:a aac -b:a 96k -movflags +faststart sparse-keyframe.mp4
+
 echo "==> hevc.mp4 - tier 2 unless the platform decodes HEVC"
 # shellcheck disable=SC2046
 ffmpeg -y -loglevel error $(src_video 30 1280x720 30) $(src_audio 30) \
