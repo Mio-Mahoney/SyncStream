@@ -25,6 +25,7 @@
  */
 
 import type { CandidateType } from '$lib/rtc/ice';
+import type { MeshStats } from '$lib/mesh/mesh';
 import { setUplinkCap } from '$lib/rtc/channel';
 
 /**
@@ -95,6 +96,13 @@ export type SyncStreamStats = {
 	 * navigation if neither has been called.
 	 */
 	ttff: number | null;
+	/**
+	 * Phase 5 mesh accounting, refreshed on the guest's status tick. Null on
+	 * the host (which is the origin, not a mesh peer) and before a guest's
+	 * host link is up. `fromPeers` and `uploaded` are what prove the mesh
+	 * moved bytes that never crossed the host's uplink.
+	 */
+	mesh: MeshStats | null;
 };
 
 function initial(): SyncStreamStats {
@@ -117,7 +125,8 @@ function initial(): SyncStreamStats {
 		tier: null,
 		waitingOn: [],
 		peers: [],
-		ttff: null
+		ttff: null,
+		mesh: null
 	};
 }
 

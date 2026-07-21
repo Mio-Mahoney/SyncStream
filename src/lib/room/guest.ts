@@ -445,6 +445,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		stats.throughputBps = hostLink.channels.stats.throughputBps;
 		stats.iceState = hostLink.pc.iceConnectionState;
 		stats.candidateType = hostLink.candidateType;
+		stats.mesh = mesh ? mesh.stats : null;
 		hostLink.channels.sendControl({
 			t: 'status',
 			bufferedAhead,

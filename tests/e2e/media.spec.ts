@@ -72,6 +72,36 @@ test('AC-3 audio is rejected with the real reason, not silently muted', async ({
 });
 
 /**
+ * FINISH-PLAN 1.1: segments cut only at sync samples, and every representation
+ * shares rep 0's segment grid, so a single-GOP file can only become a few
+ * enormous segments -- one fetch the size of the movie, no seeking, no rung
+ * switching. Transcoding inherits the same grid and cannot rescue it. The old
+ * behavior was the silent one-segment stream this test exists to forbid.
+ */
+test('a sparse-keyframe file is rejected naming the cause, not streamed as one giant segment', async ({
+	page
+}) => {
+	await openHost(page, 'sparse-keyframe.mp4');
+
+	const probed = await until(
+		() => snapshot(page),
+		(s) => s.tier !== null,
+		{
+			what: 'the probe to classify the file',
+			timeout: 60_000
+		}
+	);
+	expect(probed.tier).toBe('reject');
+
+	await expect(page.getByTestId('unplayable')).toBeVisible();
+	const shown = (await page.getByTestId('unplayable').textContent())!.toLowerCase();
+	expect(shown, 'the message must name the keyframe gap, not say "unsupported"').toContain(
+		'keyframe'
+	);
+	expect(shown, 'the message must say what to do about it').toContain('re-encoding');
+});
+
+/**
  * A rejection message that says "remux it to MP4 first" is worthless if there is
  * nowhere left to put the remux. The picker used to unmount the moment a file
  * was rejected, so the only way to try another one was to reload -- which, for
@@ -195,10 +225,14 @@ test('a throttled guest drops down the ladder and keeps playing', async ({ page,
 		}
 	);
 
-	// The whole point of the rebuild: quality is a per-segment choice.
-	const rungs = await snapshot(page);
-	expect(rungs.availableRungs.length, 'the ladder must offer more than one rung').toBeGreaterThan(
-		1
+	// The whole point of the rebuild: quality is a per-segment choice. Warming
+	// a rung is encode work, so this is polled: the claim is that the ladder
+	// offers more than native, not that it has finished doing so by whatever
+	// moment the guest's first frame happens to land on.
+	await until(
+		() => snapshot(page),
+		(s) => s.availableRungs.length > 1,
+		{ what: 'the ladder to offer more than one rung' }
 	);
 
 	// The barrier would pause the room the moment we starve the guest, which
@@ -221,6 +255,14 @@ test('a throttled guest drops down the ladder and keeps playing', async ({ page,
 	// The rung it moved to must be one the host actually encoded, which is the
 	// whole Phase 4 pipeline: demux -> decode -> encode -> mux -> serve.
 	expect(downshifted.availableRungs).toContain(downshifted.rung);
+	// And the advertised set must be a contiguous prefix of the ladder. Shaka's
+	// restrictions are a numeric window that cannot express a hole, so a set
+	// like [0, 2, 3] silently leaves a cold 720p selectable -- which is exactly
+	// how this test used to fail. The ladder warms top-down to keep this true.
+	expect(
+		downshifted.availableRungs,
+		'advertised rungs must be a contiguous prefix -- a hole is unstatable to Shaka'
+	).toEqual(downshifted.availableRungs.map((_, i) => i));
 
 	// "with zero stalls": the guest keeps advancing on the lower rung rather
 	// than buffering. This is what the 360p floor in 4.5 exists to guarantee.

@@ -27,6 +27,12 @@ export type VideoTrackInfo = {
 	height: number;
 	fps: number;
 	bitrate: number;
+	/**
+	 * The longest span between consecutive sync samples (or from the last one
+	 * to the end of the track), in seconds. Segments can only cut at sync
+	 * samples, so this is the widest segment the file can force on the grid.
+	 */
+	maxRapGapSec: number;
 	/** Raw avcC/hvcC decoder config, needed to configure a VideoDecoder. */
 	description?: Uint8Array;
 };

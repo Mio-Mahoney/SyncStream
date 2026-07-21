@@ -1,7 +1,9 @@
 # SyncStream: Streaming Rebuild Plan
 
-Status: proposed, not started
-Branch: `claude/watchparty-streaming-plan-155bbe`
+Status: built and verified (§11), usability layer merged (§12), finishing pass
+landed (FINISH-PLAN.md). Sections 1-10 are the plan as decided; §11 records
+what measurement did to it; §12 records the product the UI iterations built
+around it.
 
 ## 1. Goal
 
@@ -147,6 +149,13 @@ Deleted as a result: `server.js`, `src/lib/server/`, `docker-compose.yml`, cotur
 
 *Consequence:* room codes are generated client-side from `crypto.getRandomValues()` with no server to check collisions. At 34^6 ≈ 1.5 billion codes this is a non-issue, and it is checked anyway at join time: a host who finds the room already occupied regenerates. This is strictly better than the current build, which generates client-side and never checks at all.
 
+Occupancy detection is **best-effort by design and stays that way**: the probe
+observes the incumbent host's announce, and trystero announces at 233/533/1333ms
+before settling into a 5.3s interval, so the window (`OCCUPANCY_PROBE_MS`,
+1500ms) is sized to outlive the last warm-up burst plus relay latency and no
+further. Waiting past the bursts buys nothing except a slower room open against
+a collision space where collisions effectively do not happen.
+
 ### 4.8 Platform support: hosts are desktop, guests are anything
 
 A clean product line that matches physical reality and mirrors the Plex server/client split.
@@ -176,6 +185,8 @@ Shaka is roughly 400KB gzipped. That is a good trade for not owning an MSE buffe
 
 ## 6. Target file layout
 
+As built (originally a target; reconciled to the tree after Phase 6):
+
 ```
 src/
   lib/
@@ -183,34 +194,57 @@ src/
       transport.ts       SignalingTransport interface (§4.6 escape hatch)
       trystero.ts        strategy ladder implementation
       codes.ts           client-side room code generation
+      room.ts            hostRoomChecked retry policy, occupancy window
     rtc/
       connection.ts      RTCPeerConnection setup, perfect negotiation
-      channel.ts         framing, chunking, backpressure
+      channel.ts         framing, chunking, backpressure, uplink shaping
       ice.ts             STUN config (static)
     media/
       probe.ts           tier classification (direct / transcode / reject)
-      source.ts          host: mp4box segmentation from File
+      source.ts          host: mp4box segmentation from File (rep 0)
       manifest.ts        host: MPD generation
-      ladder.ts          host: WebCodecs transcode (Phase 4)
+      ladder.ts          host: WebCodecs transcode rungs (Phase 4)
+      origin.ts          the host origin: source + ladder + manifest as one
+      types.ts           probe/ladder/segment-index types, LADDER config
       worker/
         encode.worker.ts transcode worker (Phase 4)
       shaka/
         scheme.ts        syncstream:// NetworkingEngine plugin
-        config.ts        Shaka tuning
+        config.ts        Shaka tuning, rung restrictions
+    mesh/
+      mesh.ts            Phase 5: guest-to-guest SegmentFetcher + tracker
     sync/
       clock.ts           NTP-style offset estimation
       state.ts           authoritative playback state
+    room/
+      host.ts            host engine: rendezvous, origin, roster, barrier
+      guest.ts           guest engine: playback, sync, mesh, terminal states
     protocol/
       control.ts         JSON message types, control channel
       wire.ts            binary frame header, data channel
+    barrier.ts           Phase 3 readiness barrier bookkeeping
+    film.ts              now-playing title state
+    identity.ts          remembered display name
+    invite.ts            share-link construction (base-path aware)
+    names.ts             default name generation
+    stats.svelte.ts      the Phase 0 oracle: stats rune + window.__syncstream
+    BarrierNotice.svelte CopyLink.svelte DebugOverlay.svelte
+    FilePicker.svelte    HostBar.svelte InvitePanel.svelte NameTag.svelte
+    NowPlaying.svelte    PausedNotice.svelte PlayerControls.svelte
+    Presence.svelte      WaitingRoom.svelte     (Phase 6, see §12)
   routes/
-    +page.svelte         landing (kept, minor edit)
+    +page.svelte         landing
     room/[id]/
-      +page.svelte       rewritten from zero
+      +page.svelte       the room: player, picker, waiting room, people
 tests/
-  fixtures/gen.sh
-  e2e/
+  fixtures/gen.sh        committed small fixtures + gitignored large ones
+  e2e/                   one spec per subsystem; scale/mesh/real-movie gated
+                         on gitignored fixtures
 ```
+
+`source.ts` and `origin.ts` are both live: source segments the file for
+rep 0, origin composes source + ladder + manifest into the one object the
+host serves from.
 
 No `server.js`. No `src/lib/server/`. No `docker-compose.yml`. That is the point.
 
@@ -489,8 +523,116 @@ Two things fell out of doing it:
 - **The share link was built by hand and ignored `paths.base`.** A Pages project site is served under `/<repo>/`, so `${origin}/room/${code}` produced a link that 404s -- correct on localhost and broken in the one place it is used. It now goes through `resolve()`, and the e2e suite runs under a non-empty base path by default, because a root-domain test run is the single configuration that cannot catch this.
 - **§9's TURN decision is unchanged, but is now a config flip rather than a code change.** `PUBLIC_TURN_URLS`/`PUBLIC_TURN_USERNAME`/`PUBLIC_TURN_CREDENTIAL` mirror the Supabase opt-in: absent by default, so the cost that scales with usage stays absent. What §9 asks for -- measure, then decide -- is what the `?debug` overlay's candidate type is for.
 
-### Known gaps
+### Known gaps, closed by the finishing pass (FINISH-PLAN.md)
 
-- **Phase 5's mesh is implemented but not proven.** Its acceptance criterion (four guests, host uplink shaped to 12 Mbps, all four at native) has no test yet, so the mesh should be treated as unverified. It cannot cause a correctness failure by design -- every segment is always fetchable from the host -- but "cannot" is a claim about the code, not a measurement.
-- A rung whose warm set is non-contiguous cannot be expressed exactly through Shaka's numeric `restrictions` window (§4.2's wrinkle, documented in `shaka/config.ts`).
-- Sparse-keyframe files (a single GOP over a long span) produce one very large segment, because segments only cut at sync samples. The probe should reject or the ladder should re-key; today it neither.
+Each of the three gaps this section used to list is now either measured shut or
+retired by construction:
+
+- **Phase 5's mesh is measured -- and its criterion, run for the first time,
+  does not hold.** `tests/e2e/mesh.spec.ts` runs the §7 setup as written (four
+  guests against `large-2gb.mp4`, host uplink shaped to 12 Mbps by the app's
+  own shaper -- correction 2 below), observing the peer path through
+  `stats.mesh`, wired through the guest status tick for exactly this. What the
+  telemetry shows: the mesh protocol is correct and moves tens of MB
+  guest-to-guest during the startup buffer fill, with zero fallbacks -- then
+  goes silent. Phase 3's sync keeps every playhead aligned and every buffer
+  equally full, so all four guests want the same segment within the same
+  instant, and the announce coalesce (≤1s) plus a tracker round trip means no
+  guest's cache is ever a useful answer for another's next fetch. Each
+  estimator then reads only its ~3 Mbps share of the host uplink, no guest
+  selects the 9.5 Mbps native rung, no native segment ever enters the mesh,
+  and the room settles into a self-reinforcing 720p equilibrium: zero stalls,
+  full buffers, criterion unmet. The suite records both truths:
+  a passing test locks in what holds (12 Mbps carries four guests with zero
+  stalls, mesh bytes flow, no fallbacks, the ladder stays contiguous), and
+  the criterion itself runs as an expected-failure that will flip loudly the
+  day Phase 5 grows the fetch diversity (staggered lookahead, or a leader
+  pulling native for the room) that escaping the equilibrium needs. That
+  design work is open, and it is the one substantive engineering gap this
+  finishing pass leaves.
+- **The Shaka `restrictions` wrinkle was live, not latent, and is retired by
+  construction.** It was the throttled-ladder flake: the ladder warmed
+  cheapest-first, so every intermediate advertised set had 720p as a hole in
+  the middle, and the numeric window cannot express a hole, so guests
+  downshifted onto the one cold rung (~2 of 3 runs, signature
+  `rung 1, availableRungs [0,2,3]`). The ladder now warms and advertises
+  top-down, so every advertised set is a contiguous prefix of the ladder --
+  the only shape the window states exactly -- and a rung that fails to warm
+  ends the ladder rather than reopening the hole below it. The invariant is
+  asserted per run in `media.spec.ts`; the window in `shaka/config.ts` remains
+  as defensive translation, not as the guarantee.
+- **Sparse-keyframe files are rejected honestly, in the probe, naming the
+  measured gap.** The probe computes the widest sync-sample gap from the moov
+  it already parses (pure table arithmetic, no payload reads) and rejects past
+  30s. Routing them to the transcode tier -- this section's old suggestion --
+  would not have worked: every representation shares rep 0's segment grid (the
+  CMAF contract that makes rung switching work), so encoded rungs inherit the
+  same giant segments and the transcoder would burn CPU to reproduce the
+  problem. Calibration checked against real content: a real BluRay x265 film
+  measures a 10.6s max gap, well clear of the threshold, and
+  `real-movie.spec.ts` (gated on a gitignored local film, like the scale
+  specs) asserts a genuine movie is never rejected.
+
+### Permanent limitations (by design; not TODOs)
+
+- **Occupancy detection is best-effort** (§4.7): the probe window covers
+  trystero's announce bursts and no more, because past them the wait buys only
+  a slower room open against 1.5 billion codes.
+- **Shaka's `restrictions` window cannot express a hole.** Guarded by the
+  ladder's contiguity invariant above; would only return as a bug if someone
+  reintroduces out-of-order advertisement.
+- **No "you're hosting, leaving ends the party" prompt.** trystero's core
+  tears down every room when the `beforeunload` *event fires*, not when the
+  page actually unloads, so cancelling a confirm prompt strands a zombie room
+  (host on a live page, guests already gone) -- measured in the Phase 6 run
+  and confirmed in the package source. Suppressing its listener and re-driving
+  teardown on `pagehide` would depend on module-load order and a private
+  teardown path, for a prompt browsers may skip anyway. Guests are covered
+  instead: the host link dropping gives every guest the terminal
+  room-over screen within seconds.
+- **CI runs without the gitignored fixtures** (`large-2gb.mp4`,
+  `real-movie.mp4`) and therefore does not exercise Phase 2/4/5 at scale.
+  Machines that have them run the gated specs; CI skips them visibly.
+
+## 12. Phase 6: Usability (added after the rebuild)
+
+The rebuild left an engine wearing a prototype. A second effort -- 29
+iterations, run after Phases 0-5 and merged to `main` -- built the room around
+it: the components in §6 from `WaitingRoom` to `PausedNotice`, six e2e specs
+(`film`, `invite`, `join`, `naming`, `pause`, `picker`, `waiting`), and the
+states a real watch party actually passes through. This section exists so the
+document describes the product that ships, not the one that existed the day
+the engine worked.
+
+What it added, by area:
+
+- **A waiting room with phases.** `searching / opening / found / rejected /
+  room-over` each get a screen, with the roster of who else is waiting
+  rendered for guests, not only for the host.
+- **An invite panel and host bar.** The share link survives a base-path deploy
+  (§11 Deployment), the picker reports rejections inside itself rather than in
+  a page-top banner 700px away, and "Change video" lets a second film
+  supersede the first without ending the room.
+- **People with names.** A remembered identity, a `rename` wire message, and
+  one name tag at every site the room reports its people. The host was
+  previously the literal string "Host" and guests were "Guest 412".
+- **Reader-addressed notices.** The readiness barrier and the paused notice
+  render on the film as overlays (visible in fullscreen, where the one account
+  of a stalled film used to be a black rectangle), and they name who -- except
+  to that person, who instead gets nothing or their own phrasing.
+- **Terminal states get a screen, not a banner.** A guest whose host left, or
+  whose file was rejected, lands on a page that says so and offers a way out;
+  fullscreen is exited for them, because `display:none` does not do it.
+
+The invariants the iterations kept converging on, recorded so future copy
+does not relearn them:
+
+1. **A fact that depends on its reader ships per-link, not broadcast.**
+   `waiting`, `paused`, and `roster` all carry per-recipient fields; a message
+   written for one role must never render for another.
+2. **The narration lives on the thing it narrates.** Rejections in the picker,
+   stall notices on the film, presence next to the people -- never in a
+   page-top status channel (the one that existed was deleted in iteration 20).
+3. **Layout survives 1280x720.** The room chrome caps itself to the window and
+   shrinks the film rather than pushing controls under the fold; fullscreen
+   hides its control bar instead of burning 52px of it into the picture.

@@ -35,10 +35,16 @@ export const GUEST_STRATEGY_BUDGET_MS = 10_000;
 /**
  * The recommended window for an occupancy probe, exported so every caller of
  * `hostRoomChecked` uses the same number. Long enough for an incumbent host's
- * announce (trystero warms up at 233/533/1333ms before settling into its 5.3s
- * interval) to reach us and connect.
+ * announce to reach us and connect: trystero warms up at 233/533/1333ms
+ * before settling into its 5.3s interval, so the window must outlive the
+ * 1333ms burst plus relay latency. It used to be 1200, which closed 133ms
+ * before that burst fired -- a window that caught two of the three warm-up
+ * announces and then gave up 5.2s short of the next one. Detection stays
+ * best-effort by design (PLAN.md 4.7): past these bursts, waiting longer buys
+ * nothing but a slower room open against a collision space of 1.5 billion
+ * codes.
  */
-export const OCCUPANCY_PROBE_MS = 1200;
+export const OCCUPANCY_PROBE_MS = 1500;
 
 /** The `?s=` query parameter from PLAN.md 4.6. */
 export const STRATEGY_PARAM = 's';

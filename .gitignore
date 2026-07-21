@@ -38,3 +38,13 @@ tests/fixtures/large-2gb.mp4
 .gnhf/
 skills-lock.json
 .mcp.json
+
+# Local real-world media dropped into the repo root for testing (never
+# committed: size, and it is other people's content). Symlink one into
+# tests/fixtures/real-movie.mp4 to light up the real-movie e2e smoke.
+/*.mp4
+/*.mkv
+/*.mov
+/*.avi
+/*.webm
+tests/fixtures/real-movie.mp4

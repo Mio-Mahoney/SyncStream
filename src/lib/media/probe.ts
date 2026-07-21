@@ -339,6 +339,33 @@ function trackDurationSec(t: Mp4Track): number {
 	return ticks > 0 ? ticks / timescale : 0;
 }
 
+/**
+ * The longest span with no sync sample to cut at: sync-to-sync, plus the tail
+ * from the last sync sample to the end of the track. Segmentation cuts only at
+ * sync samples (source.ts planByRap), so this is the widest segment the file
+ * can force onto the grid every representation shares. `is_sync` is mp4box's
+ * parse of stss, and it is true for every sample when the track has none --
+ * an all-intra track, whose widest gap is a single frame. Pure moov
+ * arithmetic: nothing here reads the payload.
+ */
+function maxRapGapSec(iso: ISOFile, trackId: number): number {
+	const trak = iso.getTrackById(trackId);
+	const samples = trak?.samples ?? [];
+	if (samples.length === 0) return 0;
+	const timescale = trak.mdia?.mdhd?.timescale || 1;
+	let maxTicks = 0;
+	let lastSync = samples[0].dts;
+	for (const s of samples) {
+		if (!s.is_sync) continue;
+		if (s.dts - lastSync > maxTicks) maxTicks = s.dts - lastSync;
+		lastSync = s.dts;
+	}
+	const last = samples[samples.length - 1];
+	const tail = last.dts + (last.duration || 0) - lastSync;
+	if (tail > maxTicks) maxTicks = tail;
+	return maxTicks / timescale;
+}
+
 /** Average, not nominal: VFR files have no nominal rate and this is what they are. */
 function trackFps(t: Mp4Track): number {
 	const sec = (t.samples_duration || t.duration || 0) / (t.timescale || 1);
@@ -361,6 +388,7 @@ async function videoTrackInfo(file: File, iso: ISOFile, t: Mp4Track): Promise<Vi
 		height: t.video?.height || Math.round(t.track_height) || 0,
 		fps: trackFps(t),
 		bitrate: finiteBitrate(t.bitrate),
+		maxRapGapSec: maxRapGapSec(iso, t.id),
 		description: await videoDescription(file, iso, t.id)
 	};
 }
@@ -382,6 +410,32 @@ async function audioTrackInfo(iso: ISOFile, t: Mp4Track): Promise<AudioTrackInfo
 // ---------------------------------------------------------------------------
 // Classification (PLAN.md 4.3, 4.8)
 // ---------------------------------------------------------------------------
+
+/**
+ * The widest keyframe gap a file may have and still stream. Segments target
+ * 4s (PLAN.md 4.1); a 30s gap is already a segment an order of magnitude too
+ * large, one whole fetch and one seek target for half a minute of film.
+ *
+ * Past this, no tier helps. Transcoding cannot rescue the file: every
+ * representation shares rep 0's segment grid (types.ts TrackIndex -- the CMAF
+ * contract that makes rung switching work), so encoded rungs inherit the same
+ * giant segments, keyframe-dense on the inside but still one fetch and one
+ * seek target apiece. Re-gridding a transcode would mean cutting rep 0
+ * mid-GOP and prerolling the decoder from the previous sync sample, which on
+ * exactly the file this guards against means decoding from the start of the
+ * movie. So the honest verdict is a reject that names the cause.
+ */
+const MAX_RAP_GAP_SEC = 30;
+
+/** Why a sparse-keyframe file cannot stream, naming the measured gap. */
+function sparseKeyframeReason(video: VideoTrackInfo): string {
+	const gap = Math.round(video.maxRapGapSec);
+	return (
+		`The video track's keyframes are up to ${gap}s apart, and a stream can only be cut at keyframes, ` +
+		`so this file would become a few enormous segments with no way to seek or adapt quality. ` +
+		`It needs re-encoding with a normal keyframe interval (a few seconds) before it can be shared.`
+	);
+}
 
 function isPlayable(info: TrackInfo, checker: TypeSupportChecker | null): boolean {
 	if (!checker || !info.codec) return false;
@@ -690,6 +744,15 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 	const blockers = [videoVerdict.reason, audioVerdict.reason].filter(
 		(r): r is string => r !== null
 	);
+
+	// Sparse keyframes block every tier, whatever the codecs said: the segment
+	// grid is shared by all representations, so neither passthrough nor
+	// transcode can produce a seekable stream from a single-GOP file (see
+	// MAX_RAP_GAP_SEC). Checked after the codec verdicts so a file that is
+	// wrong twice is told both truths.
+	if (video && video.maxRapGapSec > MAX_RAP_GAP_SEC) {
+		blockers.push(sparseKeyframeReason(video));
+	}
 
 	let tier: Tier;
 	let reason: string;
