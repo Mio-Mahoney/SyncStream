@@ -251,8 +251,17 @@ recorded here and the plan text left as written.
   The probe computes the max sync-sample gap from the moov (pure table
   arithmetic) and rejects past 30s naming the measured gap. Threshold checked
   against a real BluRay x265 film: 10.6s max gap, no misfire.
-- **1.2 - done.** `mesh.spec.ts` runs the Phase 5 criterion as written; mesh
-  accounting wired into `stats.mesh` so the guest-to-guest path is observed.
+- **1.2 - run, and the criterion does not hold.** This is the pass's major
+  finding. The mesh protocol is correct (tens of MB guest-to-guest during
+  startup, zero fallbacks) but goes silent in steady state: Phase 3's sync
+  keeps all four guests wanting the same segment in the same instant, so the
+  tracker never has a useful answer, each estimator reads only its ~3 Mbps
+  host share, nobody selects native, and the room parks in a self-reinforcing
+  720p equilibrium with zero stalls. `mesh.spec.ts` locks in what holds as a
+  passing test and keeps the criterion running as an expected-failure that
+  flips loudly when Phase 5 grows fetch diversity. Escaping the equilibrium
+  is designed behavior (staggered lookahead / a leader pulling native), out
+  of scope here and recorded in PLAN.md §11 as the one open engineering gap.
   Plus `real-movie.spec.ts`: a gitignored local-film slot proving the pipeline
   on genuine content (HEVC 1080p BluRay rip: classified honestly, plays).
 - **2.2 - was already fixed** on `main` before this plan was written

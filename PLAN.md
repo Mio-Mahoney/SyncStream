@@ -528,15 +528,28 @@ Two things fell out of doing it:
 Each of the three gaps this section used to list is now either measured shut or
 retired by construction:
 
-- **Phase 5's mesh is proven.** `tests/e2e/mesh.spec.ts` runs the §7 criterion
-  as written: four guests against `large-2gb.mp4`, the host's uplink shaped to
-  12 Mbps by the app's own shaper (correction 2 below), all four sustaining the
-  native rung through a 30s lockstep window with zero stalls. The peer-to-peer
-  path is observed, not assumed: `stats.mesh` (wired through the guest status
-  tick for exactly this) shows guest-to-guest bytes on both sides of the
-  transfer. The claim "the mesh cannot cause a correctness failure" remains a
-  claim about the code; "the mesh carries the room past the host's uplink" is
-  now a measurement.
+- **Phase 5's mesh is measured -- and its criterion, run for the first time,
+  does not hold.** `tests/e2e/mesh.spec.ts` runs the §7 setup as written (four
+  guests against `large-2gb.mp4`, host uplink shaped to 12 Mbps by the app's
+  own shaper -- correction 2 below), observing the peer path through
+  `stats.mesh`, wired through the guest status tick for exactly this. What the
+  telemetry shows: the mesh protocol is correct and moves tens of MB
+  guest-to-guest during the startup buffer fill, with zero fallbacks -- then
+  goes silent. Phase 3's sync keeps every playhead aligned and every buffer
+  equally full, so all four guests want the same segment within the same
+  instant, and the announce coalesce (≤1s) plus a tracker round trip means no
+  guest's cache is ever a useful answer for another's next fetch. Each
+  estimator then reads only its ~3 Mbps share of the host uplink, no guest
+  selects the 9.5 Mbps native rung, no native segment ever enters the mesh,
+  and the room settles into a self-reinforcing 720p equilibrium: zero stalls,
+  full buffers, criterion unmet. The suite records both truths:
+  a passing test locks in what holds (12 Mbps carries four guests with zero
+  stalls, mesh bytes flow, no fallbacks, the ladder stays contiguous), and
+  the criterion itself runs as an expected-failure that will flip loudly the
+  day Phase 5 grows the fetch diversity (staggered lookahead, or a leader
+  pulling native for the room) that escaping the equilibrium needs. That
+  design work is open, and it is the one substantive engineering gap this
+  finishing pass leaves.
 - **The Shaka `restrictions` wrinkle was live, not latent, and is retired by
   construction.** It was the throttled-ladder flake: the ladder warmed
   cheapest-first, so every intermediate advertised set had 720p as a hole in
