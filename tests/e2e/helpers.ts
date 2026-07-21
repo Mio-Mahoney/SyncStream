@@ -32,6 +32,15 @@ export type Snapshot = {
 		rung: number | null;
 	}[];
 	ttff: number | null;
+	mesh: {
+		cacheBytes: number;
+		cacheKeys: number;
+		fromPeers: number;
+		fromHost: number;
+		uploaded: number;
+		uploadedTo: Record<string, number>;
+		fallbacks: number;
+	} | null;
 };
 
 /** PLAN.md 8: the Phase 0 instrumentation is the oracle. */
