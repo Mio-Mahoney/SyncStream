@@ -199,9 +199,18 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 			await request(NATIVE_REP, 'audio', focus, PRIORITY_WARM).catch(() => null);
 		}
 
-		// Cheapest rung first. The 360p floor is the one that prevents a stall, and
-		// under the Phase 3 readiness barrier one guest's stall pauses the room.
-		const order = [...configs.keys()].filter((id) => id !== NATIVE_REP).sort((a, b) => b - a);
+		// Top-down: 720p, then 480p, then 360p. Rep 0 is always in the set, so
+		// this order makes every advertised set a contiguous prefix of the
+		// ladder -- the only shape Shaka's numeric restrictions window can
+		// express exactly (applyRungRestrictions in shaka/config.ts). The old
+		// order was cheapest-first, to raise the 360p stall floor sooner, but it
+		// spent the whole warm-up advertising a set with 720p missing from the
+		// middle, and a cold rung inside the window stays selectable: guests
+		// downshifted onto rung 1 while the host advertised [0, 2, 3]. An
+		// honest advertisement beats an early floor the window cannot state;
+		// until the floor arrives, the Phase 3 barrier is what holds a starved
+		// guest, which is its job.
+		const order = [...configs.keys()].filter((id) => id !== NATIVE_REP).sort((a, b) => a - b);
 		for (const rungId of order) {
 			if (closed) return;
 			const base = focus;
@@ -210,8 +219,12 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 				const bytes = await request(rungId, 'video', base + i, PRIORITY_WARM).catch(() => null);
 				if (i === 0) leading = bytes;
 			}
-			// A rung whose own leading segment will not encode is not a rung.
-			if (leading && !closed) advertise(rungId);
+			if (closed) return;
+			// A rung whose own leading segment will not encode is not a rung --
+			// and advertising anything below it would reopen the very hole this
+			// order exists to close, so the ladder ends at the first failure.
+			if (!leading) return;
+			advertise(rungId);
 		}
 	}
 

@@ -93,6 +93,14 @@ export function configurePlayer(
  * never wider than the extremes of the available set, so the rungs the host has
  * not started are always excluded; only a skipped middle rung can leak. Closing
  * that hole exactly would mean writing an AbrManager, which 4.2 forbids.
+ *
+ * The ladder therefore never produces the hole: it warms and advertises
+ * top-down (ladder.ts warmUp), so every set that reaches this window is a
+ * contiguous prefix of the ladder and the window states it exactly. This
+ * used to be a live leak, not a latent one -- cheapest-first warming left
+ * 720p as a cold mid-window rung for the whole warm-up, and throttled guests
+ * downshifted onto it. The window below stays as defensive translation, not
+ * as the guarantee.
  */
 function applyRungRestrictions(player: shaka.Player, rungs: number[]): void {
 	const heights = new Map<number, number>();
