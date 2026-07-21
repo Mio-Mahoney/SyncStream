@@ -557,10 +557,23 @@ retired by construction:
   remembered or LRU eviction turns the cache budget into a refetch loop; and
   the guest's host-fetch deadline must be progress-based, or contended ~5MB
   native segments die seconds short of done while live traffic starves behind
-  them. Measured result: four guests reach and hold the ~9.5 Mbps native rung
-  over a 12 Mbps uplink -- arithmetically impossible without guests serving
-  guests -- on **2 of 3 runs**. The companion test locks in the floor (zero
-  stalls, mesh bytes flowing, zero fallbacks, contiguous ladder).
+  them. Measured result: **the equilibrium is broken but the criterion is not
+  met.** Guests do reach native now, and the peer path moves real bytes with
+  zero fallbacks, but the room never holds native together. The companion
+  test locks in the floor (zero stalls, mesh bytes flowing, zero fallbacks,
+  contiguous ladder).
+
+  An earlier version of this section claimed the criterion passed 2 of 3
+  runs. That was an artifact of a test too weak to state its own claim: it
+  awaited `rung === 0` on each guest **in turn**, so it passed when each
+  guest merely touched native at some instant, in any order. The room turns
+  out to oscillate continuously -- the rung vector changed in 16 of 18
+  samples taken 10s apart and spanned every rung 0 to 3 -- so guests brush
+  native regardless of whether the mesh is carrying anything. The test now
+  requires all four on native in the same sample and holding for 30s with
+  the film advancing, and against that it fails: no convergence within 300s,
+  last state `rung 2/2/1/1` at estimates 2.7-7.9 Mbps, all below the ~9.5
+  native needs.
 
   A fourth "fix" was tried, measured, and reverted, and it is recorded here
   because the reasoning is a trap. Believing the estimator was blind to mesh
@@ -576,15 +589,41 @@ retired by construction:
   went from passing in seconds to exceeding a 120s timeout. Reverted to
   Shaka's defaults, that test passes 3/3.
 
-  The remaining 1-in-3 criterion failure is characterised, and it is a
-  different problem from the equilibrium: the parked guest reported
-  `bandwidthEstimate` 3.6 Mbps against a 3.4 Mbps host link, which is
-  *correct*. It is not being lied to, and it is not blind; it is genuinely
-  not being covered by the mesh, so native is honestly unaffordable on its
-  evidence. Closing that is mesh **coverage** work. If the estimator ever
-  does need more evidence, the honest route is to issue the prefetcher's real
-  transfers through Shaka's own NetworkingEngine -- which feeds
-  `segmentDownloaded` for any non-cached segment response
+  What stands between here and the criterion is mesh **coverage**, measured
+  and quantified rather than guessed. Over a 180s four-guest run:
+
+  | | from peers | from host | prefetched | uploaded | coverage |
+  | --- | --- | --- | --- | --- | --- |
+  | totals (MB) | 70.0 | 331.5 | 196.6 | 70.0 | **17%** |
+
+  `sum(peers)` equals `sum(uploaded)` to the decimal, so the accounting is
+  sound. Two findings follow, and both are about the prefetch **policy**
+  rather than the mesh protocol under it:
+
+  1. **Prefetch is running unconditionally.** It accounts for 196.6MB of the
+     401.5MB every guest pulled -- 49% of all intake -- and returns only 0.36
+     bytes of peer service per byte spent, i.e. it is currently net-negative
+     on the one resource that binds. The gate meant to prevent this
+     (`PREFETCH_MIN_BUFFER_S`, 10s) never closes, because Shaka's
+     `bufferingGoal` is 30s and every healthy guest therefore sits at 26-33s
+     buffered forever. Buffer depth is not a proxy for spare bandwidth: a
+     guest pinned at 360p with a full buffer has none and looks perfect.
+  2. **Rung-set coverage multiplies that waste.** `meshPlan.rungs` follows a
+     room that never settles, so each guest prefetches its stripe at every
+     rung in play and most of it is at a rung nobody is on by the time it
+     would be consumed.
+
+  The two compound: speculative load saturates the uplink, unstable
+  throughput destabilises the estimates, oscillating estimates widen the rung
+  set, and that schedules more speculation. The fix directions, in order, are
+  to gate prefetch on real spare capacity rather than buffer depth, and to
+  narrow it to rep 0 plus audio instead of chasing transient rungs.
+
+  Note also what is NOT the problem: the estimator. A parked guest was
+  measured reading 3.6 Mbps against a 3.4 Mbps host link, which is *correct*.
+  If it ever does need more evidence, the honest route is to issue the
+  prefetcher's real transfers through Shaka's own NetworkingEngine -- which
+  feeds `segmentDownloaded` for any non-cached segment response
   (`networking_engine.js`, the `!response.fromCache` branch) -- never to
   revalue cache hits.
 - **The Shaka `restrictions` wrinkle was live, not latent, and is retired by

@@ -266,7 +266,7 @@ recorded here and the plan text left as written.
   on genuine content (HEVC 1080p BluRay rip: classified honestly, plays).
 
   **Addendum (2026-07-21, the fetch-diversity pass): the equilibrium is
-  broken and the criterion passes 2 of 3 runs.** The shape that won is
+  broken; the criterion is still open.** The shape that won is
   host-dealt striped ownership -- a generalization of both candidate shapes
   above: the leader, per segment, with the load spread evenly -- carried by a
   new `meshPlan` message (stripe slot, guest count, and the set of rungs the
@@ -288,12 +288,22 @@ recorded here and the plan text left as written.
   outright; reverted, that test passes 3/3. The full history is in PLAN.md
   §11, kept because the reasoning is an inviting trap.
 
-  Two things this leaves open, both honestly measured rather than assumed:
-  the criterion's remaining 1-in-3 failure is mesh **coverage**, not
-  estimator blindness (the parked guest reads 3.6 Mbps against a 3.4 Mbps
-  host link -- correct, just uncovered), and the pre-existing nostr join
-  flake accounts for 4 of 5 failures in a full-suite run, all in setup with
-  `iceState: "new"`. One tooling correction fell out: the Playwright port is
+  The criterion test itself had to be rewritten before any of this could be
+  judged. It awaited `rung === 0` on each guest **in turn**, which passes on
+  a guest merely touching native at some instant -- and the room oscillates
+  continuously, so that happens regardless of what the mesh does. It now
+  requires all four on native in the same sample, held 30s, with the film
+  advancing, and it fails against that: no convergence in 300s, estimates
+  2.7-7.9 Mbps against the ~9.5 native needs. It runs as an expected failure
+  again, with the measured reason at the assertion.
+
+  What remains is mesh **coverage**, now quantified: 17% room-wide, with
+  prefetch consuming 49% of all bytes pulled and returning 0.36 bytes of
+  peer service per byte spent. Its buffer-depth gate never closes, because
+  `bufferingGoal` keeps every healthy guest at ~30s buffered. That is
+  policy, not protocol -- the peer path itself ran the whole session with
+  zero fallbacks. Separately, the pre-existing nostr join flake accounts for
+  4 of 5 failures in a full-suite run, all in setup with `iceState: "new"`. One tooling correction fell out: the Playwright port is
   now env-overridable (PW_PORT), because `reuseExistingServer` on a fixed
   port had this worktree's suite silently testing a _different checkout's_
   preview server -- three runs of zeroed mesh stats against code that was
