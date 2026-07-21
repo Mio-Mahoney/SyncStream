@@ -184,8 +184,24 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 		/^Guest \d+$/
 	);
 
-	await throttle(page, 3_000_000);
+	// The claim under test is "a starved guest stops the room and is named",
+	// and it must not depend on which rung ABR happens to ride. The old 3 Mbps
+	// cap only starved the 2.5 Mbps 720p transcode, so the trip was a coin
+	// flip on rung roulette (~2 of 4 isolated baseline runs failed); a cap
+	// hard enough to starve every rung (100 kbps) instead wedged recovery,
+	// because no segment of any rung can finish inside the 15s host-fetch
+	// deadline at that rate.
+	//
+	// So the buffer is burned rather than drained: cap the uplink at 300 kbps
+	// -- starving every rung of this fixture (floor ~500 kbps) while leaving
+	// its smallest segments comfortably inside the fetch deadline -- and then
+	// seek the room past everything the guest pre-buffered. The guest lands on
+	// an empty buffer it can only refill at a starvation rate, and the barrier
+	// trips deterministically, whatever rung it was on.
+	await throttle(page, 300_000);
 	await page.getByTestId('play').click();
+	await page.getByTestId('seek').fill('45');
+	await page.getByTestId('seek').dispatchEvent('change');
 
 	// Starving the guest below 1s of buffer must stop the room and name who it
 	// is waiting for, rather than letting that guest silently desync.
