@@ -40,11 +40,12 @@
  * finally has an answer and the aligned demand lands on peers. Shaka is not
  * steered anywhere (4.2 stands: no AbrManager, restrictions untouched) - its
  * estimator simply starts measuring peer-served fetches instead of a quarter
- * of the host, and upshifts by itself. Prefetch runs only while our own
- * buffer is healthy, so it spends only genuine headroom, and every prefetch
- * rides the ordinary fetch path below - peer first, host always - so the
- * invariant above is untouched: a wrong, stale or missing plan costs
- * duplicate host fetches, never a segment.
+ * of the host, and upshifts by itself. Prefetch goes out only while our own
+ * live demand is quiet (PREFETCH_QUIET_MS), so it spends idle link time
+ * rather than competing with the segment the viewer is waiting for, and
+ * every prefetch rides the ordinary fetch path below - peer first, host
+ * always - so the invariant above is untouched: a wrong, stale or missing
+ * plan costs duplicate host fetches, never a segment.
  */
 
 import type { SegmentFetcher } from '$lib/media/shaka/scheme';
@@ -139,15 +140,31 @@ export const PREFETCH_MARGIN = 3;
 export const PREFETCH_DEPTH = 8;
 
 /**
- * Prefetch only while our own buffer is at least this many seconds deep.
+ * Quiet time on our own live demand before a prefetch may go out.
  *
- * This is the governor that makes prefetch spend only genuine headroom: if the
- * room cannot even sustain the current rung, buffers sag, prefetch stops, and
- * the uplink goes back to live traffic in full. Comfortably above the Phase 3
- * barrier's thresholds and below a full buffer (config.ts BUFFERING_GOAL_SEC),
- * so a healthy room prefetches and a struggling one never does.
+ * THIS IS THE GOVERNOR, and what it replaced is worth stating because the
+ * replacement looked right for weeks. The gate used to be "prefetch while our
+ * buffer is at least 10s deep", on the theory that a deep buffer means spare
+ * capacity. It does not, and measurement showed the gate never closed once:
+ * Shaka's bufferingGoal is 30s, so every guest that is not actively drowning
+ * sits at 26-33s buffered forever -- including a guest pinned to the bottom
+ * rung, which has a full buffer and no spare bandwidth whatsoever. Buffer
+ * depth measures how far ahead we have read, not what the link can still
+ * afford. With the gate stuck open, prefetch ran flat out and took 49% of
+ * every byte the room pulled, on the one resource the phase exists to
+ * conserve.
+ *
+ * Outstanding live demand is the honest signal, because it is the contention
+ * itself rather than a proxy for it: while Shaka is waiting on a segment, a
+ * prefetch issued now shares the host's token bucket with it and slows the
+ * thing the viewer is actually waiting for. So prefetch waits for our own
+ * demand to go quiet, which is exactly the "background scavenger of headroom"
+ * this was always documented to be. The delay is short because the gaps are:
+ * a caught-up guest fetches roughly one segment per segment-duration, so
+ * anything under a second reads as "between segments in a burst" rather than
+ * idle. Re-armed by the guest's 1s status tick (`tick`), so no timer here.
  */
-export const PREFETCH_MIN_BUFFER_S = 10;
+export const PREFETCH_QUIET_MS = 500;
 
 /**
  * A key the prefetcher has already attempted -- delivered, failed, or since
@@ -225,10 +242,12 @@ export type Mesh = {
 	 */
 	setPlan(slot: number, of: number, rungs: number[]): void;
 	/**
-	 * Our own buffered seconds, from the guest's status tick. The prefetcher's
-	 * throttle: below PREFETCH_MIN_BUFFER_S it stands down entirely.
+	 * Heartbeat from the guest's status tick. The prefetcher's gate opens on
+	 * elapsed quiet (PREFETCH_QUIET_MS) rather than on an event, so something
+	 * has to look again once the link goes idle; this is that look, on an
+	 * interval the guest already runs.
 	 */
-	noteHealth(bufferedAheadSec: number): void;
+	tick(): void;
 	/** The film's length, so the prefetcher stops at the last segment. */
 	noteDuration(durationSec: number): void;
 	/** Host-side tracker bookkeeping: `keys` is peerId's complete cache, not a delta. */
@@ -407,7 +426,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let liveRep: number | null = null;
 	/** Whether this film has audio at all, learned from the traffic itself. */
 	let sawAudio = false;
-	let health = 0;
+	/**
+	 * Live segment requests Shaka is waiting on right now, and when the last one
+	 * settled. Together these are "is the viewer waiting on this link", which is
+	 * what the prefetch gate asks (see PREFETCH_QUIET_MS).
+	 */
+	let liveInFlight = 0;
+	let lastLiveSettledAt = Number.NEGATIVE_INFINITY;
 	let maxSegIdx = Number.POSITIVE_INFINITY;
 	let prefetchBusy = false;
 	const prefetchAbort = new AbortController();
@@ -877,16 +902,39 @@ export function createMesh(opts: MeshOptions): Mesh {
 		segIdx: number,
 		signal: AbortSignal
 	): Promise<Uint8Array> {
-		if (!isHost && segIdx !== INIT_SEGMENT) {
+		if (isHost) return fetch(repId, track, segIdx, signal);
+
+		if (segIdx !== INIT_SEGMENT) {
 			if (track === 'video') {
 				liveEdge = segIdx;
 				liveRep = repId;
-				kickPrefetch();
 			} else {
 				sawAudio = true;
 			}
 		}
-		return fetch(repId, track, segIdx, signal);
+
+		// Counted around the whole fetch, init segments included: an init segment
+		// gates playback start, so it is the demand least worth competing with.
+		// Note this counts DEMAND, not transfers -- a request answered from our
+		// own cache settles immediately and re-opens the gate at once, which is
+		// correct, because it never touched the link.
+		liveInFlight++;
+		const done = (): void => {
+			liveInFlight--;
+			lastLiveSettledAt = performance.now();
+			// The gate cannot open here (the quiet window has only just started),
+			// but the edge may have moved, and `tick` will look again shortly.
+		};
+		return fetch(repId, track, segIdx, signal).then(
+			(bytes) => {
+				done();
+				return bytes;
+			},
+			(err) => {
+				done();
+				throw err;
+			}
+		);
 	}
 
 	// ---- prefetch ------------------------------------------------------------
@@ -953,9 +1001,19 @@ export function createMesh(opts: MeshOptions): Mesh {
 	 * headroom, and a single ordered channel to the host means concurrency here
 	 * would only stack speculative megabytes in front of live traffic.
 	 */
+	/**
+	 * Whether the link is ours to spend right now: nothing of Shaka's is
+	 * outstanding, and nothing has been for PREFETCH_QUIET_MS. See that constant
+	 * for why this replaced a buffer-depth check.
+	 */
+	function linkIsIdle(): boolean {
+		if (liveInFlight > 0) return false;
+		return performance.now() - lastLiveSettledAt >= PREFETCH_QUIET_MS;
+	}
+
 	function kickPrefetch(): void {
 		if (closed || isHost || prefetchBusy) return;
-		if (health < PREFETCH_MIN_BUFFER_S) return;
+		if (!linkIsIdle()) return;
 		const want = nextPrefetch();
 		if (!want) return;
 		prefetchBusy = true;
@@ -1015,8 +1073,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			kickPrefetch();
 		},
 
-		noteHealth(bufferedAheadSec: number): void {
-			health = Number.isFinite(bufferedAheadSec) ? bufferedAheadSec : 0;
+		tick(): void {
 			kickPrefetch();
 		},
 

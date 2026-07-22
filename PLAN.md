@@ -600,14 +600,26 @@ retired by construction:
   sound. Two findings follow, and both are about the prefetch **policy**
   rather than the mesh protocol under it:
 
-  1. **Prefetch is running unconditionally.** It accounts for 196.6MB of the
-     401.5MB every guest pulled -- 49% of all intake -- and returns only 0.36
-     bytes of peer service per byte spent, i.e. it is currently net-negative
-     on the one resource that binds. The gate meant to prevent this
-     (`PREFETCH_MIN_BUFFER_S`, 10s) never closes, because Shaka's
+  1. **Prefetch was running unconditionally (fixed).** It accounted for
+     196.6MB of the 401.5MB every guest pulled -- 49% of all intake -- and
+     returned only 0.36 bytes of peer service per byte spent, i.e. it was
+     net-negative on the one resource that binds. The gate meant to prevent
+     this (`PREFETCH_MIN_BUFFER_S`, 10s) never closed once, because Shaka's
      `bufferingGoal` is 30s and every healthy guest therefore sits at 26-33s
      buffered forever. Buffer depth is not a proxy for spare bandwidth: a
      guest pinned at 360p with a full buffer has none and looks perfect.
+     Replaced by `PREFETCH_QUIET_MS`, which gates on our own outstanding live
+     demand -- the contention itself rather than a proxy for it. Measured
+     effect, one 180s run against the same diagnostic:
+
+     | | intake | prefetch | return | coverage |
+     | --- | --- | --- | --- | --- |
+     | buffer gate (never closed) | 401.5MB | 49.0% | 0.36 | 17.4% |
+     | quiet gate | 388.0MB | 41.6% | 0.49 | 20.2% |
+
+     Every number moves the right way and none of them moves far. It is a
+     correctness fix to a governor that was documented as working and was
+     not; it is not on its own enough to reach the criterion.
   2. **Rung-set coverage multiplies that waste.** `meshPlan.rungs` follows a
      room that never settles, so each guest prefetches its stripe at every
      rung in play and most of it is at a rung nobody is on by the time it
@@ -615,9 +627,11 @@ retired by construction:
 
   The two compound: speculative load saturates the uplink, unstable
   throughput destabilises the estimates, oscillating estimates widen the rung
-  set, and that schedules more speculation. The fix directions, in order, are
-  to gate prefetch on real spare capacity rather than buffer depth, and to
-  narrow it to rep 0 plus audio instead of chasing transient rungs.
+  set, and that schedules more speculation. The first of those is now fixed
+  (the quiet gate above); narrowing prefetch to rep 0 plus audio, so the
+  smaller budget stops chasing rungs the room is leaving, is the remaining
+  step. The room still oscillated across every rung with the gate in place,
+  so the second half is doing real damage on its own.
 
   Note also what is NOT the problem: the estimator. A parked guest was
   measured reading 3.6 Mbps against a 3.4 Mbps host link, which is *correct*.

@@ -532,7 +532,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			throughput: hostLink.channels.stats.throughputBps,
 			name
 		});
-		mesh?.noteHealth(bufferedAhead);
+		mesh?.tick();
 		mesh?.announce();
 	}, STATUS_MS);
 
