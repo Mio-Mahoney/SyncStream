@@ -609,17 +609,35 @@ retired by construction:
      buffered forever. Buffer depth is not a proxy for spare bandwidth: a
      guest pinned at 360p with a full buffer has none and looks perfect.
      Replaced by `PREFETCH_QUIET_MS`, which gates on our own outstanding live
-     demand -- the contention itself rather than a proxy for it. Measured
-     effect, one 180s run against the same diagnostic:
+     demand -- the contention itself rather than a proxy for it. A/B over
+     180s runs, both arms on this branch, differing only by the gate commit,
+     mean +/- sd with the range in brackets:
 
-     | | intake | prefetch | return | coverage |
+     | | coverage % | prefetch share % | return | host MB |
      | --- | --- | --- | --- | --- |
-     | buffer gate (never closed) | 401.5MB | 49.0% | 0.36 | 17.4% |
-     | quiet gate | 388.0MB | 41.6% | 0.49 | 20.2% |
+     | buffer gate, n=4 | 22.3 +/-0.7 [21.7, 23.3] | 49.1 +/-1.9 | 0.46 +/-0.01 | 320 +/-13 |
+     | quiet gate, n=3 | **25.0** +/-1.3 [24.0, 26.5] | **43.6** +/-2.9 | **0.59** +/-0.08 | 323 +/-13 |
 
-     Every number moves the right way and none of them moves far. It is a
-     correctness fix to a governor that was documented as working and was
-     not; it is not on its own enough to reach the criterion.
+     The three prefetch-efficiency metrics separate with non-overlapping
+     ranges, so the effect is real rather than sampling noise -- an earlier
+     single-run reading of it (17.4% -> 20.2%) was directionally right but
+     established nothing, and its absolute values are not comparable anyway,
+     having been taken before the hermetic-relay work changed the
+     environment. Host bytes landing within 3MB across the two arms is the
+     internal control that makes the comparison credible despite the arms
+     running as sequential blocks rather than interleaved.
+
+     What it does NOT buy is the thing the phase is for: **host load is
+     unchanged**. The gate makes speculation more efficient without reducing
+     what the host sends. It is a correctness fix to a governor documented as
+     working and provably never engaging, and it is nowhere near enough on
+     its own.
+
+     Sampling note, learned the hard way: a run can produce a full-length
+     series and still be worthless. One discarded run held four guests for
+     20s and then lost three of them, reporting zeroed mesh totals against
+     live playback for the remainder. Validate that the host still sees four
+     guests in EVERY sample before averaging anything.
   2. **Rung-set coverage multiplies that waste.** `meshPlan.rungs` follows a
      room that never settles, so each guest prefetches its stripe at every
      rung in play and most of it is at a rung nobody is on by the time it
@@ -627,11 +645,24 @@ retired by construction:
 
   The two compound: speculative load saturates the uplink, unstable
   throughput destabilises the estimates, oscillating estimates widen the rung
-  set, and that schedules more speculation. The first of those is now fixed
-  (the quiet gate above); narrowing prefetch to rep 0 plus audio, so the
-  smaller budget stops chasing rungs the room is leaving, is the remaining
-  step. The room still oscillated across every rung with the gate in place,
-  so the second half is doing real damage on its own.
+  set, and that schedules more speculation. The first is now fixed; the
+  second is untouched and is the dominant term. Measured across the same A/B,
+  the room's rung vector changes in **~85% of samples in BOTH arms** (88%
+  +/-6 with the gate, 82% +/-8 without, ranges overlapping): the oscillation
+  is completely indifferent to prefetch volume. At 25% coverage against an
+  ideal near 25% *host* share, fixing prefetch efficiency bought 2.7 points
+  and the remaining ~50 are behind a room that never settles.
+
+  Which makes the obvious next step suspect. "Narrow prefetch to rep 0 plus
+  audio" is the intuitive move, and the arithmetic says it may be backwards:
+  a room at 720p already spends 4 x 2.5 = 10 Mbps of a 12 Mbps uplink on live
+  demand, leaving ~2 Mbps, while seeding native needs ~9.5 Mbps of unique
+  content. Both cannot happen at once. The only affordable order is to dedupe
+  the CURRENT rung first, collapsing live host demand from 4x to ~1x and
+  freeing ~9.5 Mbps, and only then seed native -- and dropping the playing
+  rungs from the prefetch set removes exactly that dedupe. Whatever is tried
+  next should be derived from that budget, and measured with the A/B protocol
+  above rather than a single run.
 
   Note also what is NOT the problem: the estimator. A parked guest was
   measured reading 3.6 Mbps against a 3.4 Mbps host link, which is *correct*.
