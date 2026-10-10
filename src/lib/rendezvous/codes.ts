@@ -53,9 +53,20 @@ export function normalizeRoomCode(input: string): string {
 	return out;
 }
 
+/**
+ * The query parameter an invite link carries its code in: `/?room=K7M4PQ`.
+ * `hooks.ts` is what makes that address serve the room, and says why the invite
+ * is not simply the room's own path.
+ */
+export const ROOM_PARAM = 'room';
+
 /** Anything that looks like a URL or a path, rather than a typed code. */
-const LOOKS_LIKE_LINK = /^\w+:\/\/|\/room\//i;
-const ROOM_PATH = /\/room\/([^/?#]+)/i;
+const LOOKS_LIKE_LINK = new RegExp(`^\\w+://|/room/|[?&]${ROOM_PARAM}=`, 'i');
+/**
+ * Both shapes a link has had: the invite's query, and the room's own path -
+ * which is what the address bar shows a host, and what older invites were.
+ */
+const ROOM_IN_LINK = new RegExp(`(?:/room/|[?&]${ROOM_PARAM}=)([^/?#&]+)`, 'i');
 
 export function looksLikeLink(input: string): boolean {
 	return LOOKS_LIKE_LINK.test(input.trim());
@@ -66,7 +77,7 @@ export function looksLikeLink(input: string): boolean {
  *
  * What the host copies is a URL, so pasting that URL into a box labelled for a
  * code is the obvious thing to do -- and running it through `normalizeRoomCode`
- * turns `.../room/K7M4PQ` into `HTTPLC`, which is six characters of the
+ * turns `.../?room=K7M4PQ` into `HTTPLR`, which is six characters of the
  * alphabet and therefore *valid*. The guest gets no error, just an empty room
  * they wait in forever. Read the link instead of mangling it.
  *
@@ -74,7 +85,7 @@ export function looksLikeLink(input: string): boolean {
  * a host racing the real one for the same code.
  */
 export function roomCodeFromLink(input: string): string | null {
-	const match = ROOM_PATH.exec(input.trim());
+	const match = ROOM_IN_LINK.exec(input.trim());
 	if (!match) return null;
 	let path: string;
 	try {

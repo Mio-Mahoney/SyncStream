@@ -35,11 +35,11 @@ test('the host can copy the invite link before picking a video', async ({ page, 
 
 	// On screen, not just on the clipboard: a link you can read is a link you can
 	// check, select, and send by hand when the copy button is refused.
-	await expect(page.getByTestId('invite-link')).toHaveValue(new RegExp(`/room/${code}`));
+	await expect(page.getByTestId('invite-link')).toHaveValue(new RegExp(`[?]room=${code}`));
 
 	await page.getByTestId('copy-link').click();
 	await expect(page.getByTestId('copy-link')).toHaveText('Copied');
-	expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`/room/${code}`);
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`?room=${code}`);
 	expect(errors, 'host page errors').toEqual([]);
 });
 
@@ -56,7 +56,7 @@ test('a refused clipboard leaves the link selected rather than doing nothing', a
 	await expect(page.getByTestId('copy-manual')).toBeVisible();
 	await expect(page.getByTestId('copy-link')).toHaveText('Copy');
 	// The fallback the message tells them to use has to actually be in place.
-	expect(await selection(page)).toContain('/room/');
+	expect(await selection(page)).toContain('?room=');
 });
 
 test('a guest who joins before the video is picked shows up for the host', async ({
@@ -88,7 +88,7 @@ test('the host can still invite someone once the film is playing', async ({ page
 	await expect(page.getByTestId('copy-link')).toBeVisible({ timeout: 45_000 });
 	await page.getByTestId('copy-link').click();
 	await expect(page.getByTestId('copy-link')).toHaveText('Copied');
-	expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`/room/${code}`);
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(`?room=${code}`);
 	expect(errors, 'host page errors').toEqual([]);
 });
 
@@ -107,8 +107,8 @@ test('a clipboard refused during playback reveals the link instead of throwing',
 
 	await expect(page.getByTestId('copy-manual')).toBeVisible();
 	// Compact keeps the field out of the bar until it is the only way through.
-	await expect(page.getByTestId('invite-link')).toHaveValue(/\/room\//);
-	expect(await selection(page)).toContain('/room/');
+	await expect(page.getByTestId('invite-link')).toHaveValue(/[?]room=/);
+	expect(await selection(page)).toContain('?room=');
 	expect(errors, 'host page errors').toEqual([]);
 });
 

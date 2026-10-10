@@ -94,7 +94,11 @@ test('the link the host copies is the link a guest can actually open', async ({
 	const link = await inviteLink(page);
 	const url = new URL(link);
 
-	expect(url.pathname, 'the invite link must carry the app base path').toBe(`${BASE}/room/${code}`);
+	// The app's root, not the room's own path: the root is the only address a
+	// rewrite-less static host answers with a 200, which is what a preview
+	// crawler needs before it will build a card for the link (src/hooks.ts).
+	expect(url.pathname, 'the invite link must carry the app base path').toBe(`${BASE}/`);
+	expect(url.searchParams.get('room'), 'the invite link names the room').toBe(code);
 	// PLAN.md 4.6: the link names the strategy that actually carried the room, so
 	// the guest tries the one the host is on first rather than walking the ladder.
 	expect(url.searchParams.get('s'), 'the link names the rendezvous strategy').toBeTruthy();

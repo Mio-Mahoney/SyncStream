@@ -123,7 +123,7 @@ WebRTC needs an out-of-band channel to exchange SDP and ICE candidates. That is 
 
 **Rendezvous protocol:**
 - The **host announces on every strategy simultaneously.** Signaling is kilobytes, the host is one process, and this costs nothing.
-- The **join link carries the host's primary strategy** (`/room/ABC123?s=supabase`). The host has connected before the link exists, so this is always known and correct.
+- The **join link carries the host's primary strategy** (`/?room=ABC123&s=nostr`; the code rides in the query, not the path, so the link is a 200 on a rewrite-less static host and gets a preview card - see `src/hooks.ts`). The host has connected before the link exists, so this is always known and correct.
 - The **guest tries the link's strategy first, then falls through the ladder.** Rendezvous succeeds if any single backend works for both parties.
 
 This is Happy Eyeballs, and it is the actual argument for the hybrid over any single backend. Supabase's free tier can be exhausted by our own success or by someone abusing the public anon key. Nostr relays come and go. Any one of them failing is survivable; all of them failing simultaneously is not a scenario worth designing against.

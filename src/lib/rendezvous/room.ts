@@ -7,7 +7,7 @@
  * fall-through dead code -- see `joinRoomByCode`.
  */
 
-import { generateRoomCode, isValidRoomCode } from '$lib/rendezvous/codes';
+import { generateRoomCode, isValidRoomCode, ROOM_PARAM } from '$lib/rendezvous/codes';
 import {
 	isStrategyName,
 	type RendezvousSession,
@@ -350,12 +350,13 @@ export async function joinRoomByCode(
 }
 
 /**
- * Builds the share link's query string (PLAN.md 4.6: `/room/ABC123?s=nostr`).
- * The host has connected before the link exists, so `primary` is always known
- * and correct.
+ * Builds the share link's query string (PLAN.md 4.6: `/?room=ABC123&s=nostr`).
+ * The whole link is this on the app's root - see `hooks.ts` for why the code
+ * rides here and not in the path. The host has connected before the link
+ * exists, so `primary` is always known and correct.
  */
-export function shareLinkQuery(primary: StrategyName): string {
-	return `?${new URLSearchParams({ [STRATEGY_PARAM]: primary }).toString()}`;
+export function shareLinkQuery(code: string, primary: StrategyName): string {
+	return `?${new URLSearchParams({ [ROOM_PARAM]: code, [STRATEGY_PARAM]: primary }).toString()}`;
 }
 
 /** The read side of `shareLinkQuery`, for the guest. */

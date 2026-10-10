@@ -477,7 +477,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		// path. Hand-writing `/room/...` produced a link that is correct only on a
 		// root domain and 404s everywhere else -- and this string is the entire
 		// product: it is what the host sends to the person they want to watch with.
-		shareUrl: `${opts.origin}${resolve('/room/[id]', { id: rendezvous.code })}${shareLinkQuery(rendezvous.primary)}`,
+		// It is the app's root with the code in the query, not the room's own path;
+		// hooks.ts says why and is what serves the room there.
+		shareUrl: `${opts.origin}${resolve('/')}${shareLinkQuery(rendezvous.code, rendezvous.primary)}`,
 		setFile,
 		/**
 		 * Broadcast, not left to the roster. A guest still waiting for a file knows

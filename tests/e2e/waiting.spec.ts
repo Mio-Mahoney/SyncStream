@@ -50,6 +50,52 @@ test('a link with a broken code says so, rather than searching for it', async ({
 	await expect(page).toHaveURL(/\/$/);
 });
 
+test('an invite link opens the room at its own address, and survives a reload', async ({
+	page
+}) => {
+	// The address the host actually sends (src/hooks.ts): the code in the query,
+	// on the root. It has to serve the room without moving the guest onto the
+	// room path, because the root is the one address a static host answers with
+	// a 200 - on the first load, and on every reload after it.
+	const invite = appPath('/?room=K7M4PQ&s=local');
+	await page.goto(invite);
+
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'searching');
+	await expect(page.getByTestId('room-code')).toHaveText('K7M4PQ');
+	const { pathname, search } = new URL(page.url());
+	expect(pathname + search, 'the guest stays on the invite address').toBe(invite);
+
+	await page.reload();
+	await expect(waiting).toHaveAttribute('data-phase', 'searching');
+	await expect(page.getByTestId('room-code')).toHaveText('K7M4PQ');
+});
+
+test('an invite link with a broken code says so too', async ({ page }) => {
+	// Including one that would be extra path segments if it were pasted into the
+	// room path unescaped: it must still reach the page that explains itself.
+	await page.goto(appPath('/?room=bad/code-nonsense'));
+
+	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'invalid');
+	await expect(page.getByTestId('waiting-title')).toHaveText("That link isn't a room");
+
+	await page.getByTestId('go-home').click();
+	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
+});
+
+test('an address that is no page at all gets a way back, not a bare 404', async ({ page }) => {
+	// Neither the start page nor a room, so the room's own dead ends never load.
+	// This used to be SvelteKit's unstyled "404 Not Found" with nothing to click.
+	await page.goto(appPath('/watch/tonight'));
+
+	await expect(page.getByTestId('error-page')).toHaveAttribute('data-status', '404');
+	await expect(page.getByTestId('error-title')).toHaveText("There's nothing at this address");
+	await expect(page.getByTestId('reload')).toHaveCount(0);
+
+	await page.getByTestId('go-home').click();
+	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
+});
+
 test('a broken code is a dead end for a would-be host too', async ({ page }) => {
 	// `?create=1` is the host's own URL. A code that cannot name a room leaves
 	// nothing to host either, so this must not fall through to the picker.

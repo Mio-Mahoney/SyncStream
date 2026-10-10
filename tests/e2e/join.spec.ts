@@ -13,7 +13,7 @@ test('pasting the invite link the host copied joins that room', async ({ page, b
 	const input = page.getByLabel('Room code');
 
 	// Exactly what lands on the clipboard from the room header's copy button.
-	await input.fill(`${baseURL}${appPath(`/room/${CODE}`)}`);
+	await input.fill(`${baseURL}${appPath(`/?room=${CODE}&s=local`)}`);
 
 	// It used to keep the first six alphabet characters of the URL -- 'HTTPLC',
 	// a valid-looking code for a room that does not exist, which the guest then
@@ -22,6 +22,17 @@ test('pasting the invite link the host copied joins that room', async ({ page, b
 
 	await page.getByRole('button', { name: 'Join' }).click();
 	await expect(page).toHaveURL(new RegExp(`/room/${CODE}$`));
+});
+
+test('a link to the room page itself is read the same way', async ({ page, baseURL }) => {
+	await page.goto(appPath('/'));
+	const input = page.getByLabel('Room code');
+
+	// What a host's address bar shows, and the shape every invite had before the
+	// code moved into the query. Both are still links people hold.
+	await input.fill(`${baseURL}${appPath(`/room/${CODE}`)}`);
+
+	await expect(input).toHaveValue(CODE);
 });
 
 test('a link with no room code in it says so instead of inventing one', async ({ page }) => {

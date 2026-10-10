@@ -53,6 +53,13 @@ bun run build                         # root domain: custom domain, Cloudflare P
 
 Nothing may construct a URL by hand -- route it through `$app/paths` or it will be correct on localhost and broken in production, which is the only place it is used.
 
+### Link previews
+
+The card a messenger shows for a pasted link comes from the `og:` tags in `src/app.html` and the image at `static/og.png` (regenerate it with `bun run og`). Two things make it work on a static host:
+
+- `og:image` must be an absolute URL, so the build needs to know its origin. CI passes it as `PUBLIC_ORIGIN`; set it yourself when deploying elsewhere (`PUBLIC_ORIGIN=https://example.com bun run build`).
+- The invite link is `/?room=CODE`, not `/room/CODE`. Crawlers only read tags off a 200 response, and on GitHub Pages a room path is answered with `404.html`. `src/hooks.ts` serves the room at the invite address; `/room/CODE` links still open.
+
 ## Test
 
 ```bash
