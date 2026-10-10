@@ -38,11 +38,19 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # Only for its `origin` output: the scheme and host Pages serves this
+      # site from, which follows a custom domain if one is ever configured.
+      - id: pages
+        uses: actions/configure-pages@v5
+
       - name: Build
         env:
           # Must match the repo name exactly; it is the URL prefix Pages serves
           # this site under.
           BASE_PATH: /${{ github.event.repository.name }}
+          # Link-preview crawlers only accept an absolute og:image, and a static
+          # build cannot know where it will be served from (src/app.html).
+          PUBLIC_ORIGIN: ${{ steps.pages.outputs.origin }}
         run: bun run build
 
       - uses: actions/upload-pages-artifact@v3

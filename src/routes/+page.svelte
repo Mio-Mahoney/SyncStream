@@ -80,11 +80,8 @@
 </script>
 
 <svelte:head>
+	<!-- The description is in app.html, where a crawler that runs no script can read it. -->
 	<title>SyncStream</title>
-	<meta
-		name="description"
-		content="Watch a local video together, in sync, with no upload and no server."
-	/>
 </svelte:head>
 
 <main class="flex min-h-screen flex-col items-center justify-center px-6 py-12 font-sans">

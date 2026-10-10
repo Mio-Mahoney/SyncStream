@@ -74,3 +74,26 @@ test('the build carries what a rewrite-less static host needs', () => {
 	const shell = readFileSync(join(build, 'index.html'), 'utf8');
 	expect(readFileSync(join(build, '404.html'), 'utf8')).toBe(shell);
 });
+
+/**
+ * A pasted link gets a preview card from whatever the crawler can read without
+ * running a script, and nothing prerenders -- so the tags have to be in the
+ * shell itself, where a `<svelte:head>` would never put them. The image is
+ * checked against the build tree because a card pointing at a file that was
+ * never emitted fails silently, in someone else's chat window.
+ */
+test('the shell carries link-preview tags a crawler can read without running it', () => {
+	const shell = readFileSync(join(build, 'index.html'), 'utf8');
+	const tag = (property: string): string | undefined =>
+		new RegExp(`<meta\\s+property="${property}"\\s+content="([^"]*)"`).exec(shell)?.[1];
+
+	expect(tag('og:title'), 'og:title').toBeTruthy();
+	expect(tag('og:description'), 'og:description').toBeTruthy();
+	expect(shell, 'a large card needs twitter:card').toContain('name="twitter:card"');
+
+	// Under the base path, or the card image 404s on a Pages project site.
+	expect(tag('og:image'), 'og:image must carry the app base path').toMatch(
+		new RegExp(`${appPath('/og.png')}$`)
+	);
+	expect(walk(build), 'og:image points at a file the build did not emit').toContain('og.png');
+});
