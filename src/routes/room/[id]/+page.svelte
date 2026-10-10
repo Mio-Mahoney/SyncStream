@@ -116,6 +116,18 @@
 	/** The URL's code could not name a room, so nothing was ever attempted. */
 	let badCode = $state(false);
 	/**
+	 * The page is not a secure context, so nothing was attempted here either.
+	 *
+	 * Browsers hand out `crypto.subtle` (and WebCodecs) only on https and on
+	 * localhost. The signaling layer hashes and encrypts every message with it,
+	 * so on any other origin each one throws inside the rendezvous library and
+	 * the room is never found: a guest read "No one is hosting" after thirty
+	 * seconds, about a host sitting on the same network. The way to get here is
+	 * the obvious one - serve the app from one computer and open its LAN address
+	 * (http://192.168.x.x) on another.
+	 */
+	let insecure = $state(false);
+	/**
 	 * The host's announce never landed, so `shownCode` names nothing. Kept apart
 	 * from the guest's read of the same failure: a guest's code was handed to
 	 * them and is worth re-checking, but this one we drew ourselves.
@@ -136,7 +148,7 @@
 	 * A guest's code needs no such gate: it was handed to them, it is the room
 	 * they are looking for either way, and nothing here can change it.
 	 */
-	const codeNamesARoom = $derived(!badCode && !roomUnopened && (!isHost || opened));
+	const codeNamesARoom = $derived(!badCode && !insecure && !roomUnopened && (!isHost || opened));
 
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
@@ -207,6 +219,9 @@
 		// to host either, and whoever is holding the broken link needs the same
 		// way out regardless of which end of it they thought they were on.
 		if (badCode) return 'invalid';
+		// The same kind of dead end, for the same reason it sits up here: nothing
+		// was attempted, and which role the reader had in mind makes no difference.
+		if (insecure) return 'insecure';
 		// Also ahead of the host check. A failed announce left them the raw relay
 		// log under a header naming the room it had just failed to open, with no
 		// control on the page at all.
@@ -240,11 +255,13 @@
 	const title = $derived(
 		badCode
 			? 'Not a room'
-			: roomUnopened
-				? "Couldn't open the room"
-				: codeNamesARoom
-					? `Room ${shownCode}`
-					: 'Opening your room'
+			: insecure
+				? 'Needs a secure address'
+				: roomUnopened
+					? "Couldn't open the room"
+					: codeNamesARoom
+						? `Room ${shownCode}`
+						: 'Opening your room'
 	);
 
 	onMount(() => {
@@ -260,6 +277,11 @@
 			// all. A broken link is a dead end like any other, and belongs on the
 			// screen that knows how to end one.
 			badCode = true;
+			return;
+		}
+
+		if (!window.isSecureContext) {
+			insecure = true;
 			return;
 		}
 
@@ -622,6 +644,7 @@
 		<WaitingRoom
 			phase={roomPhase}
 			code={shownCode}
+			address={page.url.host}
 			{hostName}
 			attempts={rendezvousFailure?.attempts ?? []}
 			reason={unplayable}
