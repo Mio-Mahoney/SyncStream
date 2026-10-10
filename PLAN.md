@@ -447,6 +447,7 @@ Because the protocol is already pull-based content-addressed segments, guests ca
 - Guest asks `sources { repId, segIdx }`, host answers with peer ids holding it.
 - Guest opens data channels directly to other peers. Rendezvous already brokers arbitrary pairs from Phase 1.
 - Request policy: prefer the peer with the best measured throughput and fewest outstanding requests, fall back to the host. Order by proximity to the playhead, not rarest-first; playback is linear and rarest-first is a torrent optimization that does not apply.
+- Fetch diversity (added after the first criterion run, §11): Phase 3's sync makes every guest want the same segment in the same instant, so a purely reactive mesh never has a useful answer and the room parks below native. The host deals each guest a prefetch stripe and the room's rung set (`meshPlan`), and guests pull their owned segments ahead of the playhead -- playing rungs first, then native -- so the caches diverge on purpose and each segment leaves the host once.
 - The host remains the authoritative source. Any segment is always fetchable from the host, so the mesh is an optimization that cannot cause a correctness failure.
 
 This slots in below the Shaka scheme handler, which keeps asking for URIs and neither knows nor cares which peer answered.
@@ -549,28 +550,148 @@ Two things fell out of doing it:
 Each of the three gaps this section used to list is now either measured shut or
 retired by construction:
 
-- **Phase 5's mesh is measured -- and its criterion, run for the first time,
-  does not hold.** `tests/e2e/mesh.spec.ts` runs the §7 setup as written (four
-  guests against `large-2gb.mp4`, host uplink shaped to 12 Mbps by the app's
-  own shaper -- correction 2 below), observing the peer path through
-  `stats.mesh`, wired through the guest status tick for exactly this. What the
-  telemetry shows: the mesh protocol is correct and moves tens of MB
-  guest-to-guest during the startup buffer fill, with zero fallbacks -- then
-  goes silent. Phase 3's sync keeps every playhead aligned and every buffer
-  equally full, so all four guests want the same segment within the same
-  instant, and the announce coalesce (≤1s) plus a tracker round trip means no
-  guest's cache is ever a useful answer for another's next fetch. Each
-  estimator then reads only its ~3 Mbps share of the host uplink, no guest
-  selects the 9.5 Mbps native rung, no native segment ever enters the mesh,
-  and the room settles into a self-reinforcing 720p equilibrium: zero stalls,
-  full buffers, criterion unmet. The suite records both truths:
-  a passing test locks in what holds (12 Mbps carries four guests with zero
-  stalls, mesh bytes flow, no fallbacks, the ladder stays contiguous), and
-  the criterion itself runs as an expected-failure that will flip loudly the
-  day Phase 5 grows the fetch diversity (staggered lookahead, or a leader
-  pulling native for the room) that escaping the equilibrium needs. That
-  design work is open, and it is the one substantive engineering gap this
-  finishing pass leaves.
+- **Phase 5's mesh is measured, its criterion failed structurally on the
+  first run -- and the fetch-diversity pass closed it.**
+  `tests/e2e/mesh.spec.ts` runs the §7 setup as written (four guests against
+  `large-2gb.mp4`, host uplink shaped to 12 Mbps by the app's own shaper --
+  correction 2 below), observing the peer path through `stats.mesh`, wired
+  through the guest status tick for exactly this. The first run showed the
+  purely reactive mesh cannot meet the criterion: Phase 3's sync keeps every
+  playhead aligned and every buffer equally full, so all four guests want the
+  same segment within the same instant, the announce coalesce (≤1s) plus a
+  tracker round trip means no guest's cache is ever a useful answer for
+  another's next fetch, each estimator reads only its ~3 Mbps share of the
+  host uplink, and the room settles into a self-reinforcing 720p equilibrium:
+  zero stalls, full buffers, criterion unmet.
+
+  The escape is designed fetch diversity (mesh.ts, "FETCH DIVERSITY"): the
+  host -- already the tracker and the only complete view of the room -- deals
+  each guest a stripe and the set of rungs in play (`meshPlan`), and each
+  guest prefetches its owned segments (`segIdx % of === slot`) a few segments
+  ahead of its own live edge: every rung the room is playing first (which
+  collapses live demand to one host copy per segment), then rep 0 (which is
+  how native bytes enter the mesh before any guest's ABR selects native),
+  gated on the guest's own buffer health so it spends only genuine headroom.
+  Three measured failure modes shaped the mechanism, each now a comment at its
+  fix: empty tracker answers must age fast (EMPTY_SOURCE_TTL_MS) or a
+  just-in-time filler is invisible; prefetch attempts, not successes, must be
+  remembered or LRU eviction turns the cache budget into a refetch loop; and
+  the guest's host-fetch deadline must be progress-based, or contended ~5MB
+  native segments die seconds short of done while live traffic starves behind
+  them. Measured result: **the equilibrium is broken but the criterion is not
+  met.** Guests do reach native now, and the peer path moves real bytes with
+  zero fallbacks, but the room never holds native together. The companion
+  test locks in the floor (zero stalls, mesh bytes flowing, zero fallbacks,
+  contiguous ladder).
+
+  An earlier version of this section claimed the criterion passed 2 of 3
+  runs. That was an artifact of a test too weak to state its own claim: it
+  awaited `rung === 0` on each guest **in turn**, so it passed when each
+  guest merely touched native at some instant, in any order. The room turns
+  out to oscillate continuously -- the rung vector changed in 16 of 18
+  samples taken 10s apart and spanned every rung 0 to 3 -- so guests brush
+  native regardless of whether the mesh is carrying anything. The test now
+  requires all four on native in the same sample and holding for 30s with
+  the film advancing, and against that it fails: no convergence within 300s,
+  last state `rung 2/2/1/1` at estimates 2.7-7.9 Mbps, all below the ~9.5
+  native needs.
+
+  A fourth "fix" was tried, measured, and reverted, and it is recorded here
+  because the reasoning is a trap. Believing the estimator was blind to mesh
+  deliveries, a pass set `abr.cacheLoadThreshold` to 0 and shortened the
+  estimator's EWMA half-lives. The premise was wrong: the 5ms default never
+  discarded real peer transfers, which are megabytes over a data channel and
+  take tens to hundreds of milliseconds. All it excluded were the mesh's own
+  LOCAL cache hits -- which the prefetcher makes common by design, and which
+  are not bandwidth evidence at all. Counting them injects samples of
+  `8000 * bytes / ~2ms`, tens of Gbps, enough for a single hit to move a
+  guest's estimate by ~28 Mbps. It broke Phase 3: a throttled guest promised
+  gigabits never came back down, and `room.spec.ts`'s barrier-recovery case
+  went from passing in seconds to exceeding a 120s timeout. Reverted to
+  Shaka's defaults, that test passes 3/3.
+
+  What stands between here and the criterion is mesh **coverage**, measured
+  and quantified rather than guessed. Over a 180s four-guest run:
+
+  | | from peers | from host | prefetched | uploaded | coverage |
+  | --- | --- | --- | --- | --- | --- |
+  | totals (MB) | 70.0 | 331.5 | 196.6 | 70.0 | **17%** |
+
+  `sum(peers)` equals `sum(uploaded)` to the decimal, so the accounting is
+  sound. Two findings follow, and both are about the prefetch **policy**
+  rather than the mesh protocol under it:
+
+  1. **Prefetch was running unconditionally (fixed).** It accounted for
+     196.6MB of the 401.5MB every guest pulled -- 49% of all intake -- and
+     returned only 0.36 bytes of peer service per byte spent, i.e. it was
+     net-negative on the one resource that binds. The gate meant to prevent
+     this (`PREFETCH_MIN_BUFFER_S`, 10s) never closed once, because Shaka's
+     `bufferingGoal` is 30s and every healthy guest therefore sits at 26-33s
+     buffered forever. Buffer depth is not a proxy for spare bandwidth: a
+     guest pinned at 360p with a full buffer has none and looks perfect.
+     Replaced by `PREFETCH_QUIET_MS`, which gates on our own outstanding live
+     demand -- the contention itself rather than a proxy for it. A/B over
+     180s runs, both arms on this branch, differing only by the gate commit,
+     mean +/- sd with the range in brackets:
+
+     | | coverage % | prefetch share % | return | host MB |
+     | --- | --- | --- | --- | --- |
+     | buffer gate, n=4 | 22.3 +/-0.7 [21.7, 23.3] | 49.1 +/-1.9 | 0.46 +/-0.01 | 320 +/-13 |
+     | quiet gate, n=3 | **25.0** +/-1.3 [24.0, 26.5] | **43.6** +/-2.9 | **0.59** +/-0.08 | 323 +/-13 |
+
+     The three prefetch-efficiency metrics separate with non-overlapping
+     ranges, so the effect is real rather than sampling noise -- an earlier
+     single-run reading of it (17.4% -> 20.2%) was directionally right but
+     established nothing, and its absolute values are not comparable anyway,
+     having been taken before the hermetic-relay work changed the
+     environment. Host bytes landing within 3MB across the two arms is the
+     internal control that makes the comparison credible despite the arms
+     running as sequential blocks rather than interleaved.
+
+     What it does NOT buy is the thing the phase is for: **host load is
+     unchanged**. The gate makes speculation more efficient without reducing
+     what the host sends. It is a correctness fix to a governor documented as
+     working and provably never engaging, and it is nowhere near enough on
+     its own.
+
+     Sampling note, learned the hard way: a run can produce a full-length
+     series and still be worthless. One discarded run held four guests for
+     20s and then lost three of them, reporting zeroed mesh totals against
+     live playback for the remainder. Validate that the host still sees four
+     guests in EVERY sample before averaging anything.
+  2. **Rung-set coverage multiplies that waste.** `meshPlan.rungs` follows a
+     room that never settles, so each guest prefetches its stripe at every
+     rung in play and most of it is at a rung nobody is on by the time it
+     would be consumed.
+
+  The two compound: speculative load saturates the uplink, unstable
+  throughput destabilises the estimates, oscillating estimates widen the rung
+  set, and that schedules more speculation. The first is now fixed; the
+  second is untouched and is the dominant term. Measured across the same A/B,
+  the room's rung vector changes in **~85% of samples in BOTH arms** (88%
+  +/-6 with the gate, 82% +/-8 without, ranges overlapping): the oscillation
+  is completely indifferent to prefetch volume. At 25% coverage against an
+  ideal near 25% *host* share, fixing prefetch efficiency bought 2.7 points
+  and the remaining ~50 are behind a room that never settles.
+
+  Which makes the obvious next step suspect. "Narrow prefetch to rep 0 plus
+  audio" is the intuitive move, and the arithmetic says it may be backwards:
+  a room at 720p already spends 4 x 2.5 = 10 Mbps of a 12 Mbps uplink on live
+  demand, leaving ~2 Mbps, while seeding native needs ~9.5 Mbps of unique
+  content. Both cannot happen at once. The only affordable order is to dedupe
+  the CURRENT rung first, collapsing live host demand from 4x to ~1x and
+  freeing ~9.5 Mbps, and only then seed native -- and dropping the playing
+  rungs from the prefetch set removes exactly that dedupe. Whatever is tried
+  next should be derived from that budget, and measured with the A/B protocol
+  above rather than a single run.
+
+  Note also what is NOT the problem: the estimator. A parked guest was
+  measured reading 3.6 Mbps against a 3.4 Mbps host link, which is *correct*.
+  If it ever does need more evidence, the honest route is to issue the
+  prefetcher's real transfers through Shaka's own NetworkingEngine -- which
+  feeds `segmentDownloaded` for any non-cached segment response
+  (`networking_engine.js`, the `!response.fromCache` branch) -- never to
+  revalue cache hits.
 - **The Shaka `restrictions` wrinkle was live, not latent, and is retired by
   construction.** It was the throttled-ladder flake: the ladder warmed
   cheapest-first, so every intermediate advertised set had 720p as a hole in

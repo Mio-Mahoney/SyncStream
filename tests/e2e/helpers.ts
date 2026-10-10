@@ -34,6 +34,7 @@ export type Snapshot = {
 	clockOffset: number;
 	drift: number;
 	rung: number | null;
+	bandwidthEstimate: number;
 	availableRungs: number[];
 	segmentQueue: number;
 	playing: boolean;
@@ -56,6 +57,7 @@ export type Snapshot = {
 		uploaded: number;
 		uploadedTo: Record<string, number>;
 		fallbacks: number;
+		prefetched: number;
 	} | null;
 };
 

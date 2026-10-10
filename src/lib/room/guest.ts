@@ -8,6 +8,7 @@
  */
 
 import {
+	bandwidthEstimate,
 	configurePlayer,
 	createPlayer,
 	currentRung,
@@ -149,6 +150,12 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	let player: shaka.Player | null = null;
 	let mesh: Mesh | null = null;
 	/**
+	 * The host's latest `meshPlan`, kept outside the mesh because the mesh does
+	 * not outlive the film (stopPlayback rebuilds it) while the stripe is about
+	 * the room's membership and does. Re-applied to every mesh built here.
+	 */
+	let meshPlan: { slot: number; of: number; rungs: number[] } | null = null;
+	/**
 	 * The manifest of the film in play, or null when there is none.
 	 *
 	 * Identity rather than a boolean, because both questions matter and they have
@@ -170,12 +177,24 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * here times out on its own, and the host has no reason to resend something
 	 * it already sent. That is invisible and unrecoverable for exactly the
 	 * request that gates first frame, the init segment, since `player.load()`
-	 * awaits it with no timeout of its own to fall back on. Matches
-	 * mesh.ts's PEER_DEADLINE_MS: reject and let Shaka's own retry policy
-	 * re-issue the request with a fresh reqId, which is a fresh chance for a
-	 * one-off relay hiccup to not repeat.
+	 * awaits it with no timeout of its own to fall back on. Reject and let
+	 * Shaka's own retry policy re-issue the request with a fresh reqId, which is
+	 * a fresh chance for a one-off relay hiccup to not repeat.
+	 *
+	 * Liveness by observed progress, not a flat deadline -- the same reasoning
+	 * as mesh.ts's sweep(), and measured, not theoretical: under the Phase 5
+	 * criterion's 12 Mbps uplink, four guests' live and prefetch traffic share
+	 * one token bucket, and a ~5MB native segment legitimately trickles for
+	 * 20-30s. A flat 15s timer killed every such transfer a few seconds short
+	 * of done, so the uplink burned on bytes that were then thrown away, live
+	 * traffic starved behind the doomed transfers, and the readiness barrier
+	 * ground the room to a halt. Progress on the host link (an ordered channel:
+	 * movement on any request proves the queue is moving) resets the stall
+	 * clock; the hard deadline still bounds the truly-lost case.
 	 */
-	const HOST_FETCH_TIMEOUT_MS = 15_000;
+	const HOST_FETCH_STALL_MS = 15_000;
+	const HOST_FETCH_DEADLINE_MS = 60_000;
+	const HOST_FETCH_SWEEP_MS = 500;
 
 	/** reqId -> resolver, for segments in flight to the host. */
 	let nextReqId = 1;
@@ -195,6 +214,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				if (!p) return;
 				pending.delete(reqId);
 				stats.segmentQueue = pending.size;
+				// The watchdog is an interval, not the old one-shot: left armed it
+				// would sweep a request that no longer exists, forever.
+				p.cleanup();
 				// Both halves matter: the host stops producing, and we stop
 				// holding the partial reassembly it already sent. Without the
 				// second, a seek leaks every segment it abandoned.
@@ -205,23 +227,39 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			const onAbort = () => finish(() => new DOMException('segment request aborted', 'AbortError'));
 			signal.addEventListener('abort', onAbort, { once: true });
 
-			const timer = setTimeout(
-				() =>
+			const startedAt = performance.now();
+			let lastBytes = link.channels.stats.bytesRecv;
+			let lastProgressAt = startedAt;
+			const timer = setInterval(() => {
+				const now = performance.now();
+				const recv = link.channels.stats.bytesRecv;
+				if (recv > lastBytes) {
+					lastBytes = recv;
+					lastProgressAt = now;
+				}
+				if (now - startedAt >= HOST_FETCH_DEADLINE_MS) {
 					finish(
 						() =>
 							new Error(
-								`guest: no reply from host for segment ${repId}/${track}/${segIdx} within ${HOST_FETCH_TIMEOUT_MS}ms`
+								`guest: segment ${repId}/${track}/${segIdx} not complete after ${HOST_FETCH_DEADLINE_MS}ms`
 							)
-					),
-				HOST_FETCH_TIMEOUT_MS
-			);
+					);
+				} else if (now - lastProgressAt >= HOST_FETCH_STALL_MS) {
+					finish(
+						() =>
+							new Error(
+								`guest: nothing from the host for ${HOST_FETCH_STALL_MS}ms on segment ${repId}/${track}/${segIdx}`
+							)
+					);
+				}
+			}, HOST_FETCH_SWEEP_MS);
 
 			pending.set(reqId, {
 				resolve,
 				reject,
 				cleanup: () => {
 					signal.removeEventListener('abort', onAbort);
-					clearTimeout(timer);
+					clearInterval(timer);
 				}
 			});
 			stats.segmentQueue = pending.size;
@@ -271,6 +309,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		mesh = hostLink
 			? createMesh({ network: net, hostPeerId: hostLink.peerId, fetchFromHost })
 			: null;
+		if (meshPlan) mesh?.setPlan(meshPlan.slot, meshPlan.of, meshPlan.rungs);
 	};
 
 	const startPlayback = async (mpd: string, duration: number, title: string) => {
@@ -288,6 +327,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		if (!mesh) return;
 
 		loadedMpd = mpd;
+		mesh.noteDuration(duration);
 		markTtffStart();
 
 		player = await createPlayer(opts.video);
@@ -367,6 +407,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		lastHostId = link.peerId;
 		sync.reset();
 		clock.reset();
+		// The plan is the host's assignment of this room's guests to rungs, so a
+		// different host's has to be waited for rather than carried over.
+		if (replaced) meshPlan = null;
 
 		if (replaced && loadedMpd !== null) {
 			// A different page is a different origin, and it has no file yet. The
@@ -377,6 +420,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		} else if (replaced || !mesh) {
 			mesh?.close();
 			mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
+			if (meshPlan) mesh.setPlan(meshPlan.slot, meshPlan.of, meshPlan.rungs);
 		}
 
 		stats.candidateType = link.candidateType;
@@ -487,6 +531,16 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				// guest is a tracker for nobody, so `have` is ignored here.
 				break;
 
+			case 'meshPlan':
+				// The host dealing out fetch diversity (see `MeshPlan` in
+				// protocol/control). mesh.setPlan validates the numbers; the check
+				// here is only that it is the host talking, like every other
+				// message that steers us.
+				if (!fromHost) break;
+				meshPlan = { slot: msg.slot, of: msg.of, rungs: msg.rungs };
+				mesh?.setPlan(msg.slot, msg.of, msg.rungs);
+				break;
+
 			case 'segReq': {
 				// Another guest pulling from our cache (PLAN.md Phase 5). Serving
 				// is the same code path as the host's, minus the origin.
@@ -565,6 +619,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		const rung = currentRung(player);
 		stats.bufferedAhead = bufferedAhead;
 		stats.rung = rung;
+		stats.bandwidthEstimate = bandwidthEstimate(player);
 		stats.rtt = clock.rtt;
 		stats.clockOffset = clock.offset;
 		stats.drift = sync.drift;
@@ -579,6 +634,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			throughput: hostLink.channels.stats.throughputBps,
 			name
 		});
+		mesh?.tick();
 		mesh?.announce();
 	}, STATUS_MS);
 

@@ -165,6 +165,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	 */
 	let title = '';
 	const guestNames = new Map<string, string>();
+	/** Latest rung per guest, off `status` - what meshPlan's `rungs` is built from. */
+	const guestRungs = new Map<string, number | null>();
 
 	const mesh: Mesh = createMesh({
 		network: net,
@@ -279,6 +281,32 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		// A rename changes the answer to "who paused this", and the roster is
 		// exactly when the room re-states who its people are.
 		announcePause();
+		announceMeshPlan();
+	};
+
+	/**
+	 * Deal each guest its prefetch stripe (`meshPlan` in protocol/control): the
+	 * fetch diversity that escapes PLAN.md 11's 720p equilibrium. Slots follow
+	 * guestNames' insertion order - join order, which renames do not disturb -
+	 * so a join or leave reshuffles as few stripes as possible. Re-dealt
+	 * wholesale on every roster change and rung change rather than delta'd: it
+	 * is a few bytes per guest, an idempotent restatement cannot drift from the
+	 * truth, and the signature check keeps the steady state silent.
+	 */
+	let meshPlanSig = '';
+	const announceMeshPlan = () => {
+		const order = [...guestNames.keys()];
+		const rungs = [
+			...new Set([...guestRungs.values()].filter((r): r is number => r !== null))
+		].sort((a, b) => a - b);
+		const sig = `${order.join(' ')}|${rungs.join(' ')}`;
+		if (sig === meshPlanSig) return;
+		meshPlanSig = sig;
+		for (const link of net.links()) {
+			const slot = order.indexOf(link.peerId);
+			if (slot < 0) continue; // no hello yet: not a guest until it says so
+			link.channels.sendControl({ t: 'meshPlan', slot, of: order.length, rungs });
+		}
 	};
 
 	/**
@@ -447,6 +475,11 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 					throughputBps: msg.throughput
 				});
 				barrier.report(link.peerId, guestName, msg.bufferedAhead);
+				// A rung change changes what the mesh plan asks owners to cover.
+				// Unconditional: announceMeshPlan's signature check makes the
+				// steady state free.
+				guestRungs.set(link.peerId, typeof msg.rung === 'number' ? msg.rung : null);
+				announceMeshPlan();
 				break;
 			}
 
@@ -491,6 +524,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	net.onPeerGone((peerId) => {
 		helloSeen.delete(peerId);
 		guestNames.delete(peerId);
+		guestRungs.delete(peerId);
 		barrier.remove(peerId);
 		removePeer(peerId);
 		announceGuests();
