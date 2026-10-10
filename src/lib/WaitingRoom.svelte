@@ -25,15 +25,28 @@
 	 * other end - the guest found no room to join, the host opened none - and it
 	 * lands here for the reason `invalid` does: it is a dead end, and this is the
 	 * screen that knows how to end one.
+	 *
+	 * `unreachable` is `failed`'s near twin and its opposite: the search found
+	 * the room, and the connection to it would not open. From the outside the
+	 * two are the same blank wait, and they used to be the same screen - which
+	 * told a guest whose host was sitting right there to go and check the code.
 	 */
 	export type Phase =
-		'searching' | 'found' | 'failed' | 'ended' | 'invalid' | 'rejected' | 'opening' | 'unopened';
+		| 'searching'
+		| 'found'
+		| 'failed'
+		| 'unreachable'
+		| 'ended'
+		| 'invalid'
+		| 'rejected'
+		| 'opening'
+		| 'unopened';
 
 	let {
 		phase,
 		code,
 		hostName = '',
-		/** Per-strategy diagnostics from a RendezvousError: `failed` or `unopened`. */
+		/** Per-strategy diagnostics from a RendezvousError: `failed`, `unreachable` or `unopened`. */
 		attempts = [] as readonly string[],
 		/** The host's probe verdict, for a `rejected` phase. */
 		reason = '',
@@ -168,6 +181,26 @@
 			A room only exists while its host has the page open. Check the code, or ask them to send the
 			invite link again.
 		</p>
+	{:else if phase === 'unreachable'}
+		<!--
+			The room answered, so everything `failed` advises is wrong here: the
+			code is right and the host is there. What did not happen is a direct
+			connection between two networks, which is the one thing this app has no
+			server to fall back on (it would have to carry the whole film).
+
+			Said about the two networks rather than about the reader's: either end
+			can be the one behind the strict NAT, and nothing here can tell which.
+			Both exits are named because both are real - a different network at
+			either end usually does it, and a retry sometimes does on its own.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">
+			Couldn't connect to room {code}
+		</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			The room is open and its host answered, but your two networks wouldn't let a direct connection
+			through. A VPN, a phone hotspot, or an office or campus network is usually why. Switching
+			networks at either end often fixes it.
+		</p>
 	{:else if phase === 'unopened'}
 		<!--
 			The host's half of `failed`, and deliberately not worded as it. "No one
@@ -215,7 +248,7 @@
 		</div>
 	{/if}
 
-	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
+	{#if phase === 'failed' || phase === 'unreachable' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
 		<!--
 			Every dead end used to be a line of text and nothing else: the only way
 			out was editing the URL. `failed` gets a retry because a host who is
@@ -225,7 +258,7 @@
 			cannot start working, so the button would be a lie.
 		-->
 		<div class="mt-6 flex justify-center gap-3">
-			{#if phase === 'failed' || phase === 'unopened'}
+			{#if phase === 'failed' || phase === 'unreachable' || phase === 'unopened'}
 				<button
 					onclick={onRetry}
 					class="rounded border border-tangerine-600 bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500 active:bg-tangerine-600"
@@ -263,7 +296,7 @@
 		</details>
 	{/if}
 
-	{#if (phase === 'failed' || phase === 'unopened') && attempts.length}
+	{#if (phase === 'failed' || phase === 'unreachable' || phase === 'unopened') && attempts.length}
 		<!--
 			The relay-by-relay diagnostic used to BE the error message a guest read,
 			and the whole of what a host read. It is worth keeping for a bug report

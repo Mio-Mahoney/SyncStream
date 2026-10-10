@@ -11,6 +11,8 @@ import { resolve } from '$app/paths';
 import { filmTitle } from '$lib/film';
 import { fallbackName, remoteName } from '$lib/identity';
 import { createOrigin } from '$lib/media/origin';
+import { configureHostPlayer, createPlayer, describePlaybackError } from '$lib/media/shaka/config';
+import { registerSyncStreamScheme, unregisterSyncStreamScheme } from '$lib/media/shaka/scheme';
 import { probeFile, tierMessage } from '$lib/media/probe';
 import type { Origin, ProbeResult } from '$lib/media/types';
 import { createMesh, type Mesh } from '$lib/mesh/mesh';
@@ -19,8 +21,10 @@ import { hostRoomChecked, shareLinkQuery, type HostRendezvous } from '$lib/rende
 import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
 import { removePeer, stats, updatePeer } from '$lib/stats.svelte';
+import { nowMs } from '$lib/sync/clock';
 import { HostState, ReadinessBarrier, type BlockedPeer } from '$lib/sync/state';
 import { OCCUPANCY_PROBE_MS } from '$lib/rendezvous/room';
+import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
 
 export type HostRoom = {
 	readonly code: string;
@@ -62,8 +66,11 @@ export type HostRoomOptions = {
 	 * just reorders the public ladder.
 	 */
 	strategy?: StrategyName;
-	/** Called when the origin is ready and the host can start playing locally. */
-	onSource: (o: { objectUrl: string | null; origin: Origin; title: string }) => void;
+	/**
+	 * A film is on, and `video` has been pointed at it: off disk when the file
+	 * plays as it is, through our own origin when it has to be converted.
+	 */
+	onSource: (o: { title: string }) => void;
 	onError: (err: Error) => void;
 	onGuests: (guests: { peerId: string; name: string }[]) => void;
 	onWaiting: (on: string[]) => void;
@@ -74,8 +81,31 @@ export type HostRoomOptions = {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * One link as the occupancy probe left it: the listener it is still holding,
+ * and everything that listener heard.
+ */
+type ProbedLink = { off: () => void; held: ControlMessage[] };
+
+/** A peer cannot make the probe buffer without bound; channel.ts caps its own the same way. */
+const PROBE_HELD_MAX = 64;
+
 export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	let network: PeerNetwork | null = null;
+	/**
+	 * What the probe heard on the network it handed over, for the room to hear
+	 * again. A guest that connects inside the probe's window says its one hello
+	 * to the probe's listener, and channel.ts only replays early messages to a
+	 * link's *first* subscriber - so a probe that simply let go would leave that
+	 * guest connected and unknown: absent from the roster, from presence, and
+	 * from the host's own screen, until someone else happened to join.
+	 *
+	 * The probe's listeners stay attached until the room's own are (see
+	 * `net.onPeer` below), because the gap between the two is asynchronous and a
+	 * link with no listener at all drops what it receives.
+	 */
+	let probed = new Map<string, ProbedLink>();
+	let offProbe: () => void = () => {};
 
 	/**
 	 * Mutable, and read at send time rather than captured: every guest already in
@@ -93,11 +123,15 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	const rendezvous: HostRendezvous = await hostRoomChecked(
 		async (r) => {
 			const probe = createPeerNetwork(r.sessions);
+			const seen = new Map<string, ProbedLink>();
 			let occupied = false;
-			probe.onPeer((link) => {
-				link.channels.onControl((msg) => {
+			const off = probe.onPeer((link) => {
+				const held: ControlMessage[] = [];
+				const offControl = link.channels.onControl((msg) => {
 					if (msg.t === 'hello' && msg.role === 'host') occupied = true;
+					if (held.length < PROBE_HELD_MAX) held.push(msg);
 				});
+				seen.set(link.peerId, { off: offControl, held });
 				link.channels.sendControl({ t: 'hello', role: 'host', name });
 			});
 			await sleep(OCCUPANCY_PROBE_MS);
@@ -106,6 +140,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				return true;
 			}
 			network = probe;
+			probed = seen;
+			offProbe = off;
 			return false;
 		},
 		3,
@@ -119,6 +155,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	let origin: Origin | null = null;
 	let objectUrl: string | null = null;
+	/** Our own player for a tier-2 film. Null while a file plays straight off disk. */
+	let player: shaka.Player | null = null;
+	let closed = false;
 	/**
 	 * The film's name, kept beside the origin it belongs to and read at send time
 	 * so a guest who arrives mid-film is told what it is, exactly like one who was
@@ -220,7 +259,14 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	const applyIntentFrom = (peerId: string | null, i: Intent) => {
 		if (i.action === 'pause')
 			pausedBy = { peerId, name: peerId === null ? name : (guestNames.get(peerId) ?? '') };
-		else if (i.action === 'play') pausedBy = null;
+		else if (i.action === 'play') {
+			pausedBy = null;
+			// Somebody chose to play through the barrier's hold. The film is about
+			// to run, so "Waiting for Sam to catch up" has stopped being true, and
+			// the barrier will not say so itself: it only speaks when the list of
+			// who is behind changes, and nobody caught up.
+			if (barrier.override()) announceWaiting([]);
+		}
 		// A seek leaves it alone: it does not stop or start the film, so whoever
 		// stopped it still stopped it.
 		state.applyIntent(i);
@@ -282,8 +328,12 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		sendWaiting(link, barrier.waitingOn);
 	};
 
+	/** Requests being read, encoded or sent right now, across every link. */
+	let serving = 0;
+
 	const serveSegment = async (link: PeerLink, msg: Extract<ControlMessage, { t: 'segReq' }>) => {
 		const { reqId, repId, track, segIdx } = msg;
+		stats.segmentQueue = ++serving;
 		try {
 			if (!origin) throw new Error('the host has not picked a file yet');
 			const bytes =
@@ -292,8 +342,12 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 					: await origin.getSegment(repId, track, segIdx);
 			await link.channels.sendSegment(reqId, bytes);
 		} catch (err) {
+			// The guest cancelled it (a seek away). It is no longer waiting on a
+			// reply, so there is nobody to send an error to.
 			if ((err as Error).name === 'AbortError') return;
 			link.channels.sendControl({ t: 'segErr', reqId, reason: (err as Error).message });
+		} finally {
+			stats.segmentQueue = --serving;
 		}
 	};
 
@@ -362,13 +416,18 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				break;
 
 			case 'segCancel':
-				// The host does not queue sends per request; the guest dropping
-				// its reassembly is what actually frees the memory. Nothing to do
-				// beyond not treating the late arrival as an error.
+				// A seek abandons everything in flight (PLAN.md Phase 2). Our uplink
+				// is the room's one constrained resource, and finishing those sends
+				// would spend it ahead of the segment the guest is now waiting on.
+				link.channels.cancelOutbound(msg.reqId);
 				break;
 
 			case 'ping':
-				link.channels.sendControl({ t: 'pong', t0: msg.t0, t1: Date.now() });
+				// nowMs(), like every other timestamp on the wire (clock.ts): the
+				// guest applies this offset to `atHostClock`, which is minted from
+				// the same clock, and a wall-clock reading here would fold the
+				// host's wall-minus-monotonic drift into every guest's playhead.
+				link.channels.sendControl({ t: 'pong', t0: msg.t0, t1: nowMs() });
 				break;
 
 			case 'intent':
@@ -414,9 +473,20 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	net.onPeer((link) => {
 		updatePeer(link.peerId, { role: 'guest', candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
+		// Ours is attached, so the probe's can go without the link ever being
+		// unheard. What it held is replayed last, behind our own hello, exactly
+		// as if the guest had said it a moment later than it did.
+		const early = probed.get(link.peerId);
+		probed.delete(link.peerId);
+		early?.off();
 		link.channels.sendControl({ t: 'hello', role: 'host', name });
 		sendReady(link);
+		for (const msg of early?.held ?? []) onControl(link, msg);
 	});
+	// Registering above replayed every link the probe met, synchronously, so
+	// from here the probe has nothing left to hand over.
+	offProbe();
+	probed.clear();
 
 	net.onPeerGone((peerId) => {
 		helloSeen.delete(peerId);
@@ -427,6 +497,60 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	});
 
 	net.onError((err) => opts.onError(err));
+
+	/** Take our own playback off the element, whichever way it was being fed. */
+	const stopOwnPlayback = async () => {
+		const old = player;
+		player = null;
+		if (old) {
+			unregisterSyncStreamScheme();
+			await old.destroy();
+		}
+		if (objectUrl) {
+			URL.revokeObjectURL(objectUrl);
+			objectUrl = null;
+			opts.video.removeAttribute('src');
+			opts.video.load();
+		}
+	};
+
+	/**
+	 * Play a tier-2 film the only way it can be played: the element cannot decode
+	 * the file, so the host watches what its guests watch, pulled from the same
+	 * origin by the same player. The one difference is the transport, which is a
+	 * function call - there is no link between us and ourselves to send it over.
+	 *
+	 * That is also why this fetcher carries no deadline, where scheme.ts says a
+	 * fetcher must: the deadline exists for a reply that can go missing in
+	 * transit, and the origin either produces the segment or throws.
+	 */
+	const playThroughOrigin = async (o: Origin) => {
+		const own = await createPlayer(opts.video);
+		// Attaching is asynchronous, and the room can close or the film can change
+		// underneath it. Either has already torn down everything it could see,
+		// which did not include a player that had not been handed back yet.
+		if (closed || origin !== o) {
+			await own.destroy();
+			return;
+		}
+		player = own;
+		own.addEventListener('error', (e) =>
+			opts.onError(new Error(describePlaybackError((e as unknown as { detail?: unknown }).detail)))
+		);
+		registerSyncStreamScheme((repId, track, segIdx) =>
+			segIdx === INIT_SEGMENT ? o.getInit(repId, track) : o.getSegment(repId, track, segIdx)
+		);
+		configureHostPlayer(own);
+
+		const blob = URL.createObjectURL(new Blob([o.mpd], { type: 'application/dash+xml' }));
+		try {
+			await own.load(blob);
+		} catch (err) {
+			throw new Error(describePlaybackError(err));
+		} finally {
+			URL.revokeObjectURL(blob);
+		}
+	};
 
 	const setFile = async (file: File): Promise<ProbeResult> => {
 		const probe = await probeFile(file);
@@ -449,25 +573,43 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		pausedBy = null;
 
 		origin?.close();
-		if (objectUrl) URL.revokeObjectURL(objectUrl);
-		origin = await createOrigin(file, probe);
+		await stopOwnPlayback();
+		const next = await createOrigin(file, probe);
+		origin = next;
 
-		// A directly-playable file needs no MSE on the host: it has the file on
-		// disk, so it plays it. Segmenting for our own playback would cost the
-		// host CPU to arrive at a worse copy of what it already has. Tier-2
-		// files have no such shortcut and go through the same origin the guests
-		// pull from.
-		objectUrl = probe.tier === 'direct' ? URL.createObjectURL(file) : null;
-
-		origin.onRungsChanged((available) => {
+		next.onRungsChanged((available) => {
 			stats.availableRungs = available;
 			net.broadcastControl({ t: 'rungs', available });
 		});
-		stats.availableRungs = origin.availableRungs();
+		stats.availableRungs = next.availableRungs();
 
-		opts.onSource({ objectUrl, origin, title });
+		// A directly-playable file needs no MSE on the host: it has the file on
+		// disk, so it plays it. Segmenting for our own playback would cost the
+		// host CPU to arrive at a worse copy of what it already has.
+		if (probe.tier === 'direct') {
+			objectUrl = URL.createObjectURL(file);
+			opts.video.src = objectUrl;
+		}
+		// Off disk we are on the file's timeline and the room is on the stream's;
+		// through our own origin we are on the stream's like everyone else.
+		state.setLeadIn(probe.tier === 'direct' ? next.leadInSec : 0);
+
+		opts.onSource({ title });
 		for (const link of net.links()) sendReady(link);
 		state.start();
+
+		// Tier-2 files have no such shortcut. After the guests have been told,
+		// not before: our own first frame waits on the encoder, and nobody else's
+		// should wait on ours. A failure here is ours alone too - the origin is
+		// up and the room is being served - so it is reported, not thrown as a
+		// rejection of a file that was accepted.
+		if (probe.tier !== 'direct') {
+			try {
+				await playThroughOrigin(next);
+			} catch (err) {
+				opts.onError(err as Error);
+			}
+		}
 		return probe;
 	};
 
@@ -494,16 +636,20 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		},
 		// `null` is us: we have no peer id of our own to compare a link against,
 		// and every link that is not the pauser is being told about someone else.
-		intent: (action, mediaTime) => applyIntentFrom(null, { t: 'intent', action, mediaTime }),
+		// Our own controls read our own element, so the time they hand us is on
+		// its timeline; an intent carries the room's (`HostState.setLeadIn`).
+		intent: (action, mediaTime) =>
+			applyIntentFrom(null, { t: 'intent', action, mediaTime: mediaTime + state.leadInSec }),
 		state,
 		barrier,
 		close: () => {
+			closed = true;
 			state.stop();
 			mesh.close();
 			net.close();
 			void rendezvous.leave();
 			origin?.close();
-			if (objectUrl) URL.revokeObjectURL(objectUrl);
+			void stopOwnPlayback();
 		}
 	};
 }

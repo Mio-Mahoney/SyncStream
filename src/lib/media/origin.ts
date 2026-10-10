@@ -8,7 +8,7 @@
  * (repId, track, segIdx) and neither knows nor cares which of those answered.
  */
 
-import { buildMpd } from './manifest';
+import { buildMpd, frameRateAttr } from './manifest';
 import { createSource } from './source';
 import { createLadder, type Ladder } from './ladder';
 import {
@@ -88,12 +88,15 @@ export async function createOrigin(file: File, probe: ProbeResult): Promise<Orig
 		throw new Error('No playable track survived probing, so there is nothing to stream.');
 	}
 
-	const mpd = buildMpd(input, probe.video ? { frameRate: String(probe.video.fps) } : {});
+	// Through frameRateAttr, not String(fps): NTSC content probes as 23.976,
+	// which is not a value @frameRate can hold (see manifest.ts).
+	const frameRate = probe.video ? frameRateAttr(probe.video.fps) : null;
+	const mpd = buildMpd(input, frameRate ? { frameRate } : {});
 
 	return {
-		probe,
 		mpd,
-		durationSec: source.durationSec,
+		durationSec: source.durationSec + source.leadInSec,
+		leadInSec: source.leadInSec,
 		getInit: (repId, track) => ladder.getInit(repId, track),
 		getSegment: (repId, track, segIdx) => {
 			// The request itself is the demand signal the ladder prioritises by,

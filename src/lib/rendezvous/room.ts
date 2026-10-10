@@ -46,6 +46,19 @@ export const GUEST_STRATEGY_BUDGET_MS = 10_000;
  */
 export const OCCUPANCY_PROBE_MS = 1500;
 
+/**
+ * How long a connection gets to open once the peer behind it has been found.
+ *
+ * The clock starts at discovery, not at the join: finding the room is the
+ * ladder's wait and can honestly take most of a strategy budget, while this
+ * one measures only ICE. A reachable peer connects in a second or two; the
+ * margin is for candidates trickling through a slow public relay. It has to
+ * be a deadline at all because the precise signal is unreliable in exactly
+ * the case it is for: with no TURN server, a NAT that STUN cannot traverse
+ * often leaves ICE sitting in `checking` rather than ever reporting `failed`.
+ */
+export const PEER_CONNECT_DEADLINE_MS = 15_000;
+
 /** The `?s=` query parameter from PLAN.md 4.6. */
 export const STRATEGY_PARAM = 's';
 
@@ -59,6 +72,26 @@ export class RendezvousError extends Error {
 		this.attempts = attempts;
 	}
 }
+
+/**
+ * The room was found and could not be connected to.
+ *
+ * A different failure from the one `RendezvousError` otherwise reports, with
+ * the opposite advice attached: there the code is worth re-checking and the
+ * host worth asking, and here both are fine - the host is in the room and
+ * answered over the relay. What failed is the direct connection, which is two
+ * networks that cannot reach each other without a relay server this app does
+ * not run (PLAN.md 9).
+ */
+export class UnreachableError extends RendezvousError {
+	constructor(message: string, attempts: readonly string[] = []) {
+		super(message, attempts);
+		this.name = 'UnreachableError';
+	}
+}
+
+/** Why `awaitFirstPeer` gave up on a peer it had already found. */
+class PeerUnreachable extends Error {}
 
 export type HostRendezvous = {
 	/** Every strategy that confirmed, in priority order. */
@@ -123,7 +156,7 @@ function link(controller: AbortController, signal: AbortSignal | undefined): () 
  * host must survive a reload, and a strategy that lived in navigation state
  * would silently revert to the public ladder on refresh.
  */
-export async function hostRoom(opts?: {
+async function hostRoom(opts?: {
 	signal?: AbortSignal;
 	code?: string;
 	strategy?: StrategyName;
@@ -249,6 +282,12 @@ export async function hostRoomChecked(
 /**
  * Resolves once `session` can see a peer, which for a guest is the only
  * evidence that the host is on this strategy.
+ *
+ * Rejects two ways, and the difference is the point. Nobody answering within
+ * `ms` is an empty room on this strategy, and the ladder moves on. A peer that
+ * answered and then could not be connected to is `PeerUnreachable`: the room
+ * exists, so there is nothing further down the ladder to find, and telling
+ * the guest "no one is hosting" would send them to check a code that is right.
  */
 function awaitFirstPeer(
 	session: RendezvousSession,
@@ -257,15 +296,24 @@ function awaitFirstPeer(
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
+		/** Connections to found peers that have neither opened nor failed yet. */
+		let negotiating = 0;
+		/** Connections that did open, and are now only waiting on the handshake above ICE. */
+		let opened = 0;
+		let found = false;
+		// Assigned below. Subscribing replays what the session already saw, and
+		// that replay can settle this promise before the subscription returns.
+		let offNegotiation: () => void = () => {};
 		const finish = (f: () => void) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			signal?.removeEventListener('abort', onAbort);
+			offNegotiation();
 			f();
 		};
 		const onAbort = () => finish(() => reject(signal?.reason));
-		const timer = setTimeout(
+		let timer = setTimeout(
 			() => finish(() => reject(new Error(`no host answered within ${ms}ms`))),
 			ms
 		);
@@ -276,8 +324,46 @@ function awaitFirstPeer(
 		}
 		signal?.addEventListener('abort', onAbort, { once: true });
 		// Replays peers already present, so a host that connected during relay
-		// confirmation is not missed.
+		// confirmation is not missed. Ahead of the negotiation replay below on
+		// purpose: a peer that is connected outranks one that could not be.
 		session.onPeerJoin(() => finish(resolve));
+
+		const off = session.onNegotiation((e) => {
+			if (e === 'discovered') {
+				negotiating++;
+				if (found) return;
+				found = true;
+				// From here the question is no longer whether anyone is there,
+				// so the strategy budget stops being the right clock.
+				clearTimeout(timer);
+				timer = setTimeout(
+					() =>
+						finish(() =>
+							reject(
+								new PeerUnreachable(
+									`found the room, but no connection opened within ${PEER_CONNECT_DEADLINE_MS}ms`
+								)
+							)
+						),
+					PEER_CONNECT_DEADLINE_MS
+				);
+				return;
+			}
+			negotiating--;
+			if (e === 'connected') opened++;
+			// Only once every connection in progress has failed, and none has
+			// opened. A room holds other guests as well as the host, and one of
+			// them being out of reach says nothing about the one still
+			// connecting - or about one whose connection is up and whose join is
+			// a handshake away, which is what `opened` is counting.
+			if (e === 'failed' && negotiating <= 0 && opened === 0) {
+				finish(() =>
+					reject(new PeerUnreachable('found the room, but the connection to it failed'))
+				);
+			}
+		});
+		if (settled) off();
+		else offNegotiation = off;
 	});
 }
 
@@ -293,6 +379,10 @@ function awaitFirstPeer(
  * host is actually on. Waiting for a peer is what makes the fall-through real,
  * and it is also the honest answer to "does this room exist" -- the room exists
  * exactly while its host is connected.
+ *
+ * Throws `UnreachableError` instead of walking on when a strategy finds the
+ * room and cannot connect to it, and plain `RendezvousError` when no strategy
+ * finds anyone.
  */
 export async function joinRoomByCode(
 	code: string,
@@ -337,6 +427,14 @@ export async function joinRoomByCode(
 			// A caller-driven abort means stop, not "try the next relay".
 			opts?.signal?.throwIfAborted();
 			attempts.push(`${transport.name}: ${errMessage(err)}`);
+			// Nor does this. The relay did its job; what failed is the path
+			// between two networks, and that is the same path on every relay.
+			if (err instanceof PeerUnreachable) {
+				throw new UnreachableError(
+					`rendezvous: room ${code} was found but could not be connected to`,
+					attempts
+				);
+			}
 		} finally {
 			clearTimeout(timer);
 			unlink();

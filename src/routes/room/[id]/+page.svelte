@@ -19,7 +19,12 @@
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
 	import { startGuestRoom, type GuestRoom } from '$lib/room/guest';
-	import { RendezvousError, STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
+	import {
+		RendezvousError,
+		STRATEGY_PARAM,
+		UnreachableError,
+		strategyFromParams
+	} from '$lib/rendezvous/room';
 	import { isValidRoomCode } from '$lib/rendezvous/codes';
 
 	// Reactive because the control bar takes it as a prop: bind:this only assigns
@@ -220,7 +225,11 @@
 		// that was not theirs to show yet. Their remaining waits are the invite
 		// panel's and the picker's to describe, and those are real controls.
 		if (isHost) return opened ? null : 'opening';
-		if (rendezvousFailure) return 'failed';
+		// The same ladder, ending two different ways: nobody was in the room, or
+		// somebody was and could not be connected to. Opposite advice follows.
+		if (rendezvousFailure) {
+			return rendezvousFailure instanceof UnreachableError ? 'unreachable' : 'failed';
+		}
 		// Outranks `ready`, since the host can also leave mid-film.
 		if (roomOver) return 'ended';
 		if (ready) return null;
@@ -298,10 +307,9 @@
 			// announce priority.
 			strategy: strategyFromParams(page.url.searchParams),
 			signal,
-			onSource: ({ objectUrl, title }) => {
-				// A directly-playable file plays off disk; a transcoded one is
-				// pulled through our own origin like any guest would.
-				if (objectUrl) video.src = objectUrl;
+			onSource: ({ title }) => {
+				// The engine has already pointed the element at it: off disk for a
+				// directly-playable file, through our own origin for a converted one.
 				film = title;
 				ready = true;
 				changing = false;
@@ -361,7 +369,13 @@
 				// watched nothing of it, whatever they watched of the first.
 				started = false;
 			},
-			onHostName: (n) => (hostName = n),
+			onHostName: (n) => {
+				hostName = n;
+				// A host saying hello is a room that exists, whatever happened to the
+				// last one: a host who reloads comes back as a new page on the same
+				// code, and every guest who stayed is still here to meet it.
+				roomOver = false;
+			},
 			onCompany: (r) => (company = r),
 			onUnplayable: (reason) => (unplayable = reason),
 			onWaiting: (on, you) => {

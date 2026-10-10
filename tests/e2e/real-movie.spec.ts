@@ -52,6 +52,19 @@ test.describe(() => {
 			}
 		);
 
+		// From the top. A film's edit list can start a couple of frames after its
+		// first keyframe (an x265 rip does), and a stream that begins on the edit
+		// throws that keyframe away and its whole GOP with it: this film's first
+		// ten seconds, missing from every guest, while the host watched them.
+		const start = await guest.evaluate(() => {
+			const v = document.querySelector('video') as HTMLVideoElement;
+			return v.buffered.length > 0 ? v.buffered.start(0) : -1;
+		});
+		expect(start, "the guest's film must be buffered from its first frame").toBeGreaterThanOrEqual(
+			0
+		);
+		expect(start).toBeLessThan(0.5);
+
 		await page.getByTestId('play').click();
 		const was = await videoTime(guest);
 		await until(

@@ -5,11 +5,10 @@ export default defineConfig({
 	plugins: [sveltekit()],
 
 	// Vite only inlines import.meta.env keys matching envPrefix, and SvelteKit
-	// deliberately does not widen it. Without PUBLIC_ here,
-	// import.meta.env.PUBLIC_SUPABASE_URL is always undefined and the Supabase
-	// rendezvous strategy in $lib/rendezvous/trystero reports
-	// isConfigured() === false forever -- including on the day someone finally
-	// supplies credentials (PLAN.md 4.6).
+	// deliberately does not widen it. Without PUBLIC_ here the PUBLIC_TURN_*
+	// variables in $lib/rtc/ice are always undefined, and TURN stays
+	// unconfigured forever -- including on the day someone finally supplies a
+	// server (PLAN.md 9).
 	envPrefix: ['VITE_', 'PUBLIC_'],
 
 	worker: {

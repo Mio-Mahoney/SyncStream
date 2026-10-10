@@ -124,6 +124,21 @@ export type TrackIndex = {
 	track: Track;
 	timescale: number;
 	durationSec: number;
+	/**
+	 * The media time, in timescale units, that the file's edit list presents as
+	 * zero. Segment times are raw media times; this is the manifest's
+	 * `presentationTimeOffset`. It is the edit list's start, moved back to the
+	 * keyframe that start depends on (see `Origin.leadInSec`). Zero when the
+	 * track has no edit to honour.
+	 */
+	presentationOffset: number;
+	/**
+	 * Where the last frame shown ends, as a raw media time in timescale units.
+	 * Past the last segment's end by the reorder delay when there are B-frames.
+	 */
+	presentationEnd: number;
+	/** How long the edit list says the track plays for, or null if it does not say. */
+	presentationDurationSec: number | null;
 	segments: SegmentEntry[];
 };
 
@@ -153,10 +168,17 @@ export type ManifestInput = {
  * interface's problem and nobody else's.
  */
 export type Origin = {
-	readonly probe: ProbeResult;
 	/** The DASH MPD, already generated. */
 	readonly mpd: string;
 	readonly durationSec: number;
+	/**
+	 * Seconds of film the stream presents ahead of where the file's own edit
+	 * list starts, because the edit begins partway through a GOP and the stream
+	 * has to begin at its keyframe (source.ts `leadIn`). The stream's clock
+	 * reads this much more than a <video> playing the file directly, at the same
+	 * frame. Zero for nearly every file.
+	 */
+	readonly leadInSec: number;
 
 	getInit(repId: number, track: Track): Promise<Uint8Array>;
 	getSegment(repId: number, track: Track, segIdx: number): Promise<Uint8Array>;

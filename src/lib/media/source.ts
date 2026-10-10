@@ -85,9 +85,10 @@ export type Source = {
 	readonly videoIndex: TrackIndex | null;
 	readonly audioIndex: TrackIndex | null;
 	readonly durationSec: number;
+	/** See `Origin.leadInSec`. */
+	readonly leadInSec: number;
 	getInit(track: Track): Promise<Uint8Array>;
 	getSegment(track: Track, segIdx: number): Promise<Uint8Array>;
-	readonly cacheBytes: number;
 	close(): void;
 };
 
@@ -276,16 +277,150 @@ function planBySplits(samples: Sample[], splits: number[]): SegPlan[] {
 	return plans;
 }
 
+/**
+ * Where the last frame to be *shown* ends, in media time. Not `sampleEnd`,
+ * which is where the last one to be *decoded* does: with B-frames those are
+ * different samples, and the presentation runs on past the final decode time
+ * by the reorder delay.
+ */
+function presentationEnd(samples: Sample[]): number {
+	let end = 0;
+	for (const s of samples) end = Math.max(end, s.cts + s.duration);
+	return end;
+}
+
 function sampleEnd(samples: Sample[]): number {
 	const last = samples[samples.length - 1];
 	return last.dts + last.duration;
+}
+
+type Edit = { offset: number; durationSec: number | null };
+
+/** A track with no edit list: nothing to honour, and nothing to take out. */
+const NO_EDIT: Edit = { offset: 0, durationSec: null };
+
+/**
+ * What a track's edit list asks of a player, reduced to the one shape worth
+ * honouring: "start `offset` in, and play for this long".
+ *
+ * That is every edit list an encoder or a trim tool writes in practice - the
+ * few frames of B-frame reorder delay or AAC priming on nearly every file,
+ * and the whole trim on a file cut without re-encoding. A leading empty edit
+ * (a track that starts late) is folded in where it can be: it moves the start
+ * the other way, and a start before the first sample is not something a
+ * presentationTimeOffset can state, so that case reads as no offset.
+ *
+ * Anything else - several media edits, a rate other than 1 - is a timeline
+ * that a segment index cannot express at all. That is `null`, which is not the
+ * same answer as "no edit": the caller leaves such a track's edit list where
+ * it found it, so a browser that reads edit lists still can.
+ */
+function readEdit(trak: NonNullable<Trak>, movieTimescale: number): Edit | null {
+	const entries = trak.edts?.elst?.entries ?? [];
+	if (entries.length === 0) return NO_EDIT;
+	const timescale = trak.mdia.mdhd.timescale;
+	let delay = 0;
+	let i = 0;
+	while (i < entries.length && entries[i].media_time === -1) {
+		delay += entries[i].segment_duration;
+		i++;
+	}
+	const edit = entries[i];
+	if (!edit || i + 1 !== entries.length) return null;
+	if (edit.media_rate_integer !== 1 || edit.media_rate_fraction !== 0) return null;
+	if (movieTimescale <= 0) return null;
+
+	const offset = edit.media_time - Math.round((delay * timescale) / movieTimescale);
+	if (offset < 0) return null;
+	return {
+		offset,
+		durationSec: edit.segment_duration > 0 ? edit.segment_duration / movieTimescale : null
+	};
+}
+
+/**
+ * How far before the edit's start the stream has to begin, in the track's own
+ * units, so that the frame the edit starts on can be decoded at all.
+ *
+ * An edit may start anywhere, and a decoder can only start at a keyframe.
+ * A <video> playing the file deals with that itself: it decodes from the
+ * keyframe and shows nothing until the edit's start. A segmented stream has
+ * no such option - everything before the start of its timeline is discarded
+ * on append, and a discarded keyframe takes its whole GOP with it, so a film
+ * whose edit begins two frames in loses its first ten seconds of picture.
+ * (That is not hypothetical: it is how an x265 Blu-ray rip is laid out, and
+ * it is what a browser that applies the edit list itself was doing to it.)
+ *
+ * So the stream's timeline starts at the keyframe instead, this much earlier
+ * than the host's, and the host accounts for the difference (`leadInSec`).
+ * Zero on most files, where the edit starts exactly on the first frame.
+ */
+function leadIn(samples: Sample[], offset: number): number {
+	let keyframe = -1;
+	for (const s of samples) {
+		if (s.is_sync && s.cts <= offset && s.cts > keyframe) keyframe = s.cts;
+	}
+	// No keyframe at or before the start means the track simply begins late,
+	// and there is nothing ahead of the edit to keep.
+	return keyframe < 0 ? 0 : offset - keyframe;
+}
+
+const BOX_HEADER_BYTES = 8;
+
+/** The direct children of the box body spanning [from, to), as type and extent. */
+function childBoxes(
+	bytes: Uint8Array,
+	from: number,
+	to: number
+): { type: string; start: number; end: number }[] {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const out: { type: string; start: number; end: number }[] = [];
+	let at = from;
+	while (at + BOX_HEADER_BYTES <= to) {
+		const size = view.getUint32(at);
+		// A 64-bit or to-end-of-file size never appears inside an init segment's
+		// moov; stop rather than misread one.
+		if (size < BOX_HEADER_BYTES || at + size > to) break;
+		const type = String.fromCharCode(...bytes.subarray(at + 4, at + 8));
+		out.push({ type, start: at, end: at + size });
+		at += size;
+	}
+	return out;
+}
+
+/**
+ * Takes the edit list out of an init segment, by retitling its box `free`.
+ *
+ * The edit is stated once, in the manifest, as a presentationTimeOffset. Left
+ * in the init segment as well it is applied twice on a browser whose MSE reads
+ * edit lists (Chromium's does) and once on a browser whose MSE does not, and
+ * neither total is something the manifest can be written to match. Without it
+ * every browser sees the same raw sample times and the manifest alone says
+ * where zero is - which is also all the encoded rungs ever had, since their
+ * init segments are built from scratch and never carried an edit.
+ *
+ * Retitled rather than removed so no size field in the moov has to change.
+ */
+function withoutEditList(init: Uint8Array): Uint8Array {
+	const out = init.slice();
+	for (const moov of childBoxes(out, 0, out.byteLength)) {
+		if (moov.type !== 'moov') continue;
+		for (const trak of childBoxes(out, moov.start + BOX_HEADER_BYTES, moov.end)) {
+			if (trak.type !== 'trak') continue;
+			for (const box of childBoxes(out, trak.start + BOX_HEADER_BYTES, trak.end)) {
+				if (box.type === 'edts') out.set([0x66, 0x72, 0x65, 0x65], box.start + 4); // 'free'
+			}
+		}
+	}
+	return out;
 }
 
 function buildIndex(
 	track: Track,
 	timescale: number,
 	samples: Sample[],
-	plans: SegPlan[]
+	plans: SegPlan[],
+	edit: Edit
 ): TrackIndex {
 	const end = sampleEnd(samples);
 	const segments: SegmentEntry[] = plans.map((plan, i) => {
@@ -297,6 +432,9 @@ function buildIndex(
 		track,
 		timescale,
 		durationSec: (end - samples[0].dts) / timescale,
+		presentationOffset: edit.offset,
+		presentationEnd: presentationEnd(samples),
+		presentationDurationSec: edit.durationSec,
 		segments
 	};
 }
@@ -355,6 +493,36 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 	if (audioTrak && audioSamples.length === 0) {
 		throw new Error('source: the audio track has an empty sample table');
 	}
+
+	// Read before segmentation for the same reason the plans are made first:
+	// what initializeSegmentation() leaves of the traks is not ours to rely on.
+	const videoEdit = videoTrak ? readEdit(videoTrak, info.timescale) : NO_EDIT;
+	const audioEdit = audioTrak ? readEdit(audioTrak, info.timescale) : NO_EDIT;
+
+	// One lead-in for the whole stream, set by whichever track has keyframes to
+	// respect: video if there is any, since every audio sample is one.
+	const leadTrak = videoTrak ?? audioTrak;
+	const leadEdit = videoTrak ? videoEdit : audioEdit;
+	const leadInSec =
+		leadTrak && leadEdit
+			? leadIn(leadTrak.samples, leadEdit.offset) / leadTrak.mdia.mdhd.timescale
+			: 0;
+
+	/**
+	 * A track's edit as the stream states it: starting `leadInSec` early, and
+	 * so running that much longer. Audio cannot always start as early as video
+	 * needs it to - it may not have that much before its own edit - and then it
+	 * starts where its samples do, which leaves it leading the picture by the
+	 * shortfall. That is tens of milliseconds on the files that do it, and the
+	 * alternative is the lost GOP.
+	 */
+	const streamEdit = (edit: Edit | null, timescale: number): Edit => {
+		if (!edit) return NO_EDIT;
+		return {
+			offset: Math.max(0, edit.offset - Math.round(leadInSec * timescale)),
+			durationSec: edit.durationSec === null ? null : edit.durationSec + leadInSec
+		};
+	};
 
 	// Plan before touching segmentation: initializeSegmentation() calls
 	// resetTables(), which strips stss and the rest of the sample tables out of
@@ -423,6 +591,9 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 		if (!found) throw new Error(`source: mp4box produced no init segment for track ${id}`);
 		return new Uint8Array(found.buffer);
 	};
+	/** The edit goes into the manifest or stays in the init segment, never both. */
+	const initWith = (id: number, edit: Edit | null): Uint8Array =>
+		edit ? withoutEditList(initFor(id)) : initFor(id);
 
 	const states: Partial<Record<Track, TrackState>> = {};
 	if (videoTrack && videoTrak) {
@@ -431,8 +602,14 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 			trak: videoTrak,
 			samples: videoSamples,
 			plans: videoPlans,
-			index: buildIndex('video', videoTrak.mdia.mdhd.timescale, videoSamples, videoPlans),
-			init: initFor(videoTrack.id)
+			index: buildIndex(
+				'video',
+				videoTrak.mdia.mdhd.timescale,
+				videoSamples,
+				videoPlans,
+				streamEdit(videoEdit, videoTrak.mdia.mdhd.timescale)
+			),
+			init: initWith(videoTrack.id, videoEdit)
 		};
 	}
 	if (audioTrack && audioTrak) {
@@ -441,8 +618,14 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 			trak: audioTrak,
 			samples: audioSamples,
 			plans: audioPlans,
-			index: buildIndex('audio', audioTrak.mdia.mdhd.timescale, audioSamples, audioPlans),
-			init: initFor(audioTrack.id)
+			index: buildIndex(
+				'audio',
+				audioTrak.mdia.mdhd.timescale,
+				audioSamples,
+				audioPlans,
+				streamEdit(audioEdit, audioTrak.mdia.mdhd.timescale)
+			),
+			init: initWith(audioTrack.id, audioEdit)
 		};
 	}
 
@@ -561,6 +744,7 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 		probe,
 		videoIndex: states.video?.index ?? null,
 		audioIndex: states.audio?.index ?? null,
+		leadInSec,
 		durationSec:
 			probe.durationSec > 0
 				? probe.durationSec
@@ -594,10 +778,6 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 				});
 			inflight.set(key, job);
 			return job;
-		},
-
-		get cacheBytes(): number {
-			return cache.bytes;
 		},
 
 		close(): void {

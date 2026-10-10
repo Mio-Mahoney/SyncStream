@@ -11,12 +11,13 @@ import {
 	configurePlayer,
 	createPlayer,
 	currentRung,
+	describePlaybackError,
 	playerBufferAhead
 } from '$lib/media/shaka/config';
 import { registerSyncStreamScheme, unregisterSyncStreamScheme } from '$lib/media/shaka/scheme';
 import { createMesh, type Mesh } from '$lib/mesh/mesh';
 import type { ControlMessage, Track } from '$lib/protocol/control';
-import { joinRoomByCode } from '$lib/rendezvous/room';
+import { joinRoomByCode, UnreachableError } from '$lib/rendezvous/room';
 import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
 import { markFirstFrame, markTtffStart, removePeer, stats, updatePeer } from '$lib/stats.svelte';
@@ -25,7 +26,6 @@ import { GuestSync } from '$lib/sync/state';
 import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
 
 export type GuestRoom = {
-	readonly player: shaka.Player | null;
 	close(): void;
 	sendIntent(action: 'play' | 'pause' | 'seek', mediaTime: number): void;
 	/**
@@ -104,10 +104,17 @@ export type GuestRoomOptions = {
 const STATUS_MS = 1000;
 
 export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom> {
-	const session = await joinRoomByCode(opts.code, opts.preferred, { signal: opts.signal });
-
 	stats.role = 'guest';
 	stats.room = opts.code;
+	const session = await joinRoomByCode(opts.code, opts.preferred, { signal: opts.signal }).catch(
+		(err: unknown) => {
+			// The PLAN.md 9 measurement, from the side that has no candidate type
+			// to record: with no TURN configured, a connection that needed a
+			// relay is one that never opened (see stats.svelte.ts).
+			if (err instanceof UnreachableError) stats.iceState = 'failed';
+			throw err;
+		}
+	);
 	stats.strategy = session.strategy;
 
 	const net: PeerNetwork = createPeerNetwork([session]);
@@ -118,6 +125,22 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * thing that makes that true is refusing to apply state from anyone else.
 	 */
 	let hostLink: PeerLink | null = null;
+	/**
+	 * Every connected peer that has said it is the host, oldest claim first.
+	 *
+	 * The room code is the only credential there is (PLAN.md 4.7), so a claim
+	 * cannot be checked - but it can be ordered. The first claimant is the host
+	 * for as long as it stays connected, and a later one is remembered rather
+	 * than obeyed: a second host probing a code that turned out to be taken says
+	 * hello as a host to everyone in the room before it backs off, and letting
+	 * that hello take over would hand the room to a peer that leaves a second
+	 * later, ending the party for a guest whose real host never went anywhere.
+	 * The claim is kept because the other way a second host appears is a real
+	 * one - the host reloaded, and the old page has not timed out yet.
+	 */
+	const hostClaims = new Map<string, { link: PeerLink; name: string }>();
+	/** The last host we followed, to tell that host coming back from a new one. */
+	let lastHostId: string | null = null;
 	/**
 	 * Mutable, and read at send time: the hello of any peer we meet after we have
 	 * named ourselves must carry the name we chose, not the one we arrived under.
@@ -134,6 +157,8 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * must not restart anything - while a genuinely different film must.
 	 */
 	let loadedMpd: string | null = null;
+	/** What `onReady` said about that film, to say again if its host comes back. */
+	let loadedFilm: { duration: number; title: string } | null = null;
 
 	const clock = new ClockSync((msg) => hostLink?.channels.sendControl(msg));
 	const sync = new GuestSync(opts.video, clock);
@@ -169,6 +194,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				const p = pending.get(reqId);
 				if (!p) return;
 				pending.delete(reqId);
+				stats.segmentQueue = pending.size;
 				// Both halves matter: the host stops producing, and we stop
 				// holding the partial reassembly it already sent. Without the
 				// second, a seek leaks every segment it abandoned.
@@ -198,6 +224,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 					clearTimeout(timer);
 				}
 			});
+			stats.segmentQueue = pending.size;
 			link.channels.sendControl({ t: 'segReq', reqId, repId, track, segIdx });
 		});
 
@@ -205,6 +232,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		const p = pending.get(reqId);
 		if (!p) return;
 		pending.delete(reqId);
+		stats.segmentQueue = pending.size;
 		p.cleanup();
 		fn(p);
 	};
@@ -226,6 +254,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	const stopPlayback = async () => {
 		if (loadedMpd === null) return;
 		loadedMpd = null;
+		loadedFilm = null;
 		sync.stop();
 		opts.video.pause();
 
@@ -263,11 +292,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 
 		player = await createPlayer(opts.video);
 		player.addEventListener('error', (e) =>
-			opts.onError(
-				new Error(
-					`playback: ${(e as unknown as { detail?: { message?: string } }).detail?.message ?? 'shaka error'}`
-				)
-			)
+			opts.onError(new Error(describePlaybackError((e as unknown as { detail?: unknown }).detail)))
 		);
 
 		// PLAN.md 4.2: the scheme handler is a URI parser and a promise. Under
@@ -285,6 +310,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		const blob = URL.createObjectURL(new Blob([mpd], { type: 'application/dash+xml' }));
 		try {
 			await player.load(blob);
+		} catch (err) {
+			// Shaka rejects with its own error type, whose message is a bare code.
+			throw new Error(describePlaybackError(err));
 		} finally {
 			URL.revokeObjectURL(blob);
 		}
@@ -297,7 +325,8 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		opts.video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
 		clock.start();
 		sync.start();
-		opts.onReady({ duration, title });
+		loadedFilm = { duration, title };
+		opts.onReady(loadedFilm);
 	};
 
 	/**
@@ -319,6 +348,48 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * fresh link doing the handshake over.
 	 */
 	const helloSeen = new Set<string>();
+
+	/**
+	 * Start following `link` as the host. Only ever called with no host live.
+	 *
+	 * Everything the sync engine holds is about one host page, and none of it
+	 * survives a change of page: `seq` restarts at 1 there, so the last state we
+	 * applied would outrank every new one for as many seconds as the old host
+	 * ran, and the clock offset was measured against a clock that no longer
+	 * exists. Both are dropped even when it is the same page back on a fresh
+	 * connection, where they would still be right - a second of re-measuring
+	 * costs less than a rule about when stale state is safe to keep.
+	 */
+	const adoptHost = (link: PeerLink, hostName: string) => {
+		const samePage = lastHostId === link.peerId;
+		const replaced = lastHostId !== null && !samePage;
+		hostLink = link;
+		lastHostId = link.peerId;
+		sync.reset();
+		clock.reset();
+
+		if (replaced && loadedMpd !== null) {
+			// A different page is a different origin, and it has no file yet. The
+			// film we hold cannot be continued from it, and keeping it would make
+			// the same file picked again look like the film already playing
+			// (`loadedMpd`). Queued, so it lands ahead of any `ready` that follows.
+			playback = playback.then(stopPlayback).catch((err: Error) => opts.onError(err));
+		} else if (replaced || !mesh) {
+			mesh?.close();
+			mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
+		}
+
+		stats.candidateType = link.candidateType;
+		opts.onHostName(hostName);
+
+		// The same page, back on a new connection, with its film still loaded
+		// here: pick up where `onPeerGone` left off rather than waiting for a
+		// `ready` that will be recognised as a repeat and do nothing.
+		if (samePage && loadedFilm) {
+			sync.start();
+			opts.onReady(loadedFilm);
+		}
+	};
 
 	const onControl = (link: PeerLink, msg: ControlMessage) => {
 		// Anything below this line is authoritative, so it must come from the
@@ -342,15 +413,13 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				if (first) link.channels.sendControl({ t: 'hello', role: 'guest', name });
 				updatePeer(link.peerId, { name: msg.name, role: msg.role });
 				if (msg.role === 'host') {
-					// A repeated hello from the same host (the answer above is one
+					hostClaims.set(link.peerId, { link, name: msg.name });
+					if (hostLink === null) adoptHost(link, msg.name);
+					// A repeated hello from our own host (the answer above is one
 					// source; the probe-and-real handlers on the host are another)
-					// must not rebuild the mesh under the one already announcing.
-					if (hostLink !== link) {
-						hostLink = link;
-						mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
-					}
-					stats.candidateType = link.candidateType;
-					opts.onHostName(msg.name);
+					// changes nothing but possibly the name. One from anybody else
+					// is a claim, and `hostClaims` is where those wait.
+					else if (hostLink === link) opts.onHostName(msg.name);
 				}
 				break;
 			}
@@ -360,10 +429,13 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			// (see `Roster` in protocol/control) - taking it from the peer directly
 			// would name whoever the mesh happened to link us to and silently omit
 			// the rest.
-			case 'rename':
+			case 'rename': {
 				updatePeer(link.peerId, { name: msg.name });
+				const claim = hostClaims.get(link.peerId);
+				if (claim) claim.name = msg.name;
 				if (fromHost) opts.onHostName(msg.name);
 				break;
+			}
 
 			case 'ready':
 				if (fromHost) queuePlayback(msg.mpd, msg.duration, msg.title);
@@ -400,6 +472,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 
 			case 'segErr':
+				// `pending` holds requests made to the host, so only the host can
+				// fail one. Mesh requests have their own ids and their own handler.
+				if (!fromHost) break;
 				settle(msg.reqId, (p) => {
 					link.channels.cancelInbound(msg.reqId);
 					p.reject(new Error(msg.reason));
@@ -416,7 +491,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				// Another guest pulling from our cache (PLAN.md Phase 5). Serving
 				// is the same code path as the host's, minus the origin.
 				const bytes = mesh?.serve(link.peerId, msg.repId, msg.track, msg.segIdx) ?? null;
-				if (bytes) void link.channels.sendSegment(msg.reqId, bytes);
+				// Nothing to report either way it fails: a cancel means the peer has
+				// stopped waiting, and a link that died mid-send has nobody on it.
+				if (bytes) link.channels.sendSegment(msg.reqId, bytes).catch(() => {});
 				else
 					link.channels.sendControl({
 						t: 'segErr',
@@ -426,6 +503,11 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				break;
 			}
 
+			case 'segCancel':
+				// The peer seeked away from a segment we are serving it.
+				link.channels.cancelOutbound(msg.reqId);
+				break;
+
 			default:
 				break;
 		}
@@ -434,12 +516,17 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	net.onPeer((link) => {
 		updatePeer(link.peerId, { candidateType: link.candidateType });
 		link.channels.onControl((msg) => onControl(link, msg));
-		link.channels.onSegment((reqId, payload) => settle(reqId, (p) => p.resolve(payload)));
+		// Bytes for a request made to the host are only taken from the host. Any
+		// peer in the room can put a frame on this channel under any reqId.
+		link.channels.onSegment((reqId, payload) => {
+			if (link.peerId === hostLink?.peerId) settle(reqId, (p) => p.resolve(payload));
+		});
 		link.channels.sendControl({ t: 'hello', role: 'guest', name });
 	});
 
 	net.onPeerGone((peerId) => {
 		helloSeen.delete(peerId);
+		hostClaims.delete(peerId);
 		removePeer(peerId);
 		if (hostLink?.peerId === peerId) {
 			// PLAN.md Phase 1: the room exists while the host is connected.
@@ -455,6 +542,18 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			sync.stop();
 			opts.video.pause();
 			opts.onHostGone();
+			// The room is over unless someone else here has already said they
+			// host it, which is what a host who reloaded looks like from a guest
+			// that noticed the new page before it noticed the old one die.
+			const next = hostClaims.values().next().value;
+			if (next) {
+				adoptHost(next.link, next.name);
+				// Whatever it told us while we were following someone else was
+				// dropped on arrival, `ready` included, and it has no reason to say
+				// any of it twice. A hello is what makes a host state the room from
+				// the top (host.ts answers every one with `ready` and the rest).
+				next.link.channels.sendControl({ t: 'hello', role: 'guest', name });
+			}
 		}
 	});
 
@@ -484,9 +583,6 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	}, STATUS_MS);
 
 	return {
-		get player() {
-			return player;
-		},
 		sendIntent: (action, mediaTime) =>
 			hostLink?.channels.sendControl({ t: 'intent', action, mediaTime }),
 		/**

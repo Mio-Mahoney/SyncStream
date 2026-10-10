@@ -80,6 +80,21 @@ export function configurePlayer(
 }
 
 /**
+ * The host playing its own tier-2 file back through its own origin.
+ *
+ * ABR is for a link, and the host has none: every segment it asks for comes out
+ * of the ladder in the same tab. Left on, the estimator would time the encoder
+ * instead - read a cold rung's first-segment stall as a collapsed network and
+ * drop the one viewer with no network at all to the bottom rung. So it is off,
+ * and the opening estimate is set past any rung's bandwidth, which is what
+ * makes the one choice Shaka still makes (the first) land on rep 0.
+ */
+export function configureHostPlayer(player: shaka.Player): void {
+	configurePlayer(player, {});
+	player.configure({ abr: { enabled: false, defaultBandwidthEstimate: Number.MAX_SAFE_INTEGER } });
+}
+
+/**
  * PLAN.md 4.5: serve a rung only once its leading segments are ready, so encode
  * latency is never read by the estimator as network congestion.
  *
@@ -149,6 +164,42 @@ export function playerBufferAhead(player: shaka.Player, video: HTMLMediaElement)
 	}
 	// The playhead sits in a gap: honestly zero, which is what a stall is.
 	return 0;
+}
+
+/**
+ * A Shaka failure as a sentence someone can act on.
+ *
+ * `shaka.util.Error.message` is "Shaka Error 4032" and nothing else, which is
+ * what the error banner was showing: not silent, but not something anybody
+ * watching a film can do anything with. The codes named here are the ones this
+ * app can actually produce; the rest keep the bare code, which stays on the
+ * end of every message because it is what a bug report needs.
+ */
+export function describePlaybackError(err: unknown): string {
+	const code = (err as { code?: unknown } | null)?.code;
+	if (typeof code !== 'number') {
+		return err instanceof Error ? err.message : 'Playback failed for an unknown reason.';
+	}
+	const { Code } = shaka.util.Error;
+	let what: string;
+	switch (code) {
+		case Code.CONTENT_UNSUPPORTED_BY_BROWSER:
+			what = "This browser can't play the format this video is in.";
+			break;
+		case Code.BAD_HTTP_STATUS:
+		case Code.HTTP_ERROR:
+		case Code.TIMEOUT:
+			what = "Part of the video didn't arrive from the host. The connection may have dropped.";
+			break;
+		case Code.VIDEO_ERROR:
+		case Code.MEDIA_SOURCE_OPERATION_FAILED:
+		case Code.MEDIA_SOURCE_OPERATION_THREW:
+			what = 'This browser hit an error decoding the video.';
+			break;
+		default:
+			what = 'Playback failed.';
+	}
+	return `${what} (Shaka error ${code})`;
 }
 
 /** The active variant's rung, i.e. its MPD RepresentationID. */

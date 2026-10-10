@@ -156,6 +156,27 @@ before settling into a 5.3s interval, so the window (`OCCUPANCY_PROBE_MS`,
 further. Waiting past the bursts buys nothing except a slower room open against
 a collision space where collisions effectively do not happen.
 
+**Trust model: the room code is the only credential.** Nothing authenticates a
+peer beyond having the code, so anyone holding it can join and can say it is
+the host. That is acceptable for what this is (a room of people invited by
+link) and it is stated here so it stops being implied. What the code does
+enforce is narrower:
+
+- A guest follows the *first* peer that claims to be the host for as long as
+  that peer stays connected. A later claim is remembered and only acted on if
+  the first host leaves, which is how a host who reloads gets their guests
+  back. It also means a second host probing an occupied code cannot take the
+  room from the one already running it.
+- State, the manifest, and replies to segment requests made to the host are
+  only accepted from that peer. Mesh replies are only accepted from the peer
+  the request was sent to.
+- Segment bytes from mesh peers are not verified against anything. The cache
+  key is content-addressing by convention, not by digest (`mesh.ts`), so a
+  guest in the room can serve another guest wrong bytes.
+
+A room that needed more than this would need a secret the relay never sees,
+which trystero's `password` option provides and this build does not use.
+
 ### 4.8 Platform support: hosts are desktop, guests are anything
 
 A clean product line that matches physical reality and mirrors the Plex server/client split.

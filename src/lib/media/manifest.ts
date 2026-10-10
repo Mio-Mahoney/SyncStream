@@ -80,7 +80,7 @@ export function frameRateAttr(fps: number): string | null {
  * Rounds to whole milliseconds *before* decomposing, so 59.9996s renders as
  * PT1M rather than the nonsense PT60S that a naive floor-then-round produces.
  */
-export function iso8601Duration(seconds: number): string {
+function iso8601Duration(seconds: number): string {
 	if (!Number.isFinite(seconds) || seconds <= 0) return 'PT0S';
 	const totalMs = Math.round(seconds * 1000);
 	const hours = Math.floor(totalMs / 3_600_000);
@@ -147,17 +147,31 @@ function emittedTimescale(index: TrackIndex): number {
  * Where this track's timeline actually ends, in seconds, per the <S> elements
  * we emit rather than per anything the caller told us.
  *
- * S@t values are raw media timestamps and there is no presentationTimeOffset,
- * so presentation time equals media time and this end is absolute, not a span.
- * The last run's implied end is `first.time + d * (r + 1)`, which is exactly the
- * last entry's own time + duration, because that arithmetic is the condition the
- * run was formed under.
+ * S@t values are raw *decode* times, and two things separate the end of the
+ * last one from the end of the presentation. B-frames push it later: the last
+ * frame shown ends a reorder delay after the last one decoded, which is what
+ * `presentationEnd` measures. The edit list pulls it earlier, by
+ * `presentationOffset` at the front and, if it stops the track before its
+ * samples run out, by whatever it cuts off the back. On a typical file the
+ * first two cancel exactly, since the offset an encoder writes is its own
+ * reorder delay; counting only one of them clips the last frames of the film.
+ *
+ * Never short of the segments themselves, so a track whose index was built
+ * without sample times to measure (`presentationEnd` of zero) still ends where
+ * its timeline does.
  */
 function timelineEndSec(index: TrackIndex): number {
 	const segs = roundedSegments(index);
 	if (segs.length === 0) return 0;
 	const last = segs[segs.length - 1];
-	return (last.time + last.duration) / emittedTimescale(index);
+	const shown = Math.max(last.time + last.duration, Math.round(index.presentationEnd));
+	const end = (shown - emittedOffset(index)) / emittedTimescale(index);
+	return Math.max(0, Math.min(end, index.presentationDurationSec ?? Infinity));
+}
+
+/** The presentationTimeOffset as emitted, in the emitted timescale's units. */
+function emittedOffset(index: TrackIndex): number {
+	return Math.max(0, Math.round(index.presentationOffset));
 }
 
 /**
@@ -198,8 +212,15 @@ function segmentTimeline(index: TrackIndex, pad: string): string[] {
 function segmentTemplate(index: TrackIndex, track: Track, pad: string): string[] {
 	// timescale must match the TrackIndex exactly: the S values below are raw
 	// media timestamps in those units, shared by every rep of this track.
+	//
+	// presentationTimeOffset is where the file's edit list goes: the media time
+	// that plays at zero. It is per track because the edit is - video starts a
+	// reorder delay in, audio a priming packet in, and the two are different
+	// numbers in different units. Left out when zero, which is the default.
+	const offset = emittedOffset(index);
 	const open =
 		`${pad}<SegmentTemplate timescale="${emittedTimescale(index)}" startNumber="0"` +
+		(offset > 0 ? ` presentationTimeOffset="${offset}"` : '') +
 		` initialization="${esc(initTemplate(track))}"` +
 		` media="${esc(mediaTemplate(track))}">`;
 	return [
@@ -304,9 +325,9 @@ export function buildMpd(input: ManifestInput, extras: MpdExtras = {}): string {
 			: null;
 
 	// The presentation ends where the segments end, which is not what
-	// `durationSec` measures. S@t values are absolute media timestamps and there
-	// is no pto, so the presentation runs from the first sample's media time to
-	// the last one's -- while `durationSec` is a *span*, and its source is either
+	// `durationSec` measures. S@t values are absolute media timestamps, so the
+	// presentation runs from each track's presentationTimeOffset to its last
+	// sample's media time -- while `durationSec` is a *span*, and its source is either
 	// the mvhd (which counts edit lists and the longest track) or a subtraction
 	// that already cancelled the start offset out. The two agree only when the
 	// first sample sits at zero and every track is the same length.

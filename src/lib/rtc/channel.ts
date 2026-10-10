@@ -64,13 +64,20 @@ export function setUplinkCap(bytesPerSec: number | null): void {
 	lastRefill = performance.now();
 }
 
-export function uplinkCap(): number | null {
-	return uplinkCapBps;
+function abortError(): DOMException {
+	return new DOMException('sendSegment aborted', 'AbortError');
 }
 
-async function spend(bytes: number): Promise<void> {
+/**
+ * Rejects on `signal` rather than sleeping through it. A cancelled send that
+ * kept queueing here would wake, take the tokens it was waiting for, and only
+ * then notice it had nothing to send -- spending the shaped uplink on a
+ * segment nobody wants, which is the exact cost cancelling exists to avoid.
+ */
+async function spend(bytes: number, signal?: AbortSignal): Promise<void> {
 	if (uplinkCapBps === null) return;
 	for (;;) {
+		if (signal?.aborted) throw abortError();
 		const now = performance.now();
 		const cap = uplinkCapBps;
 		if (cap === null) return;
@@ -81,7 +88,15 @@ async function spend(bytes: number): Promise<void> {
 			return;
 		}
 		const waitMs = ((bytes - tokens) / cap) * 1000;
-		await new Promise((r) => setTimeout(r, Math.max(1, Math.ceil(waitMs))));
+		await new Promise<void>((resolve) => {
+			const done = (): void => {
+				clearTimeout(timer);
+				signal?.removeEventListener('abort', done);
+				resolve();
+			};
+			const timer = setTimeout(done, Math.max(1, Math.ceil(waitMs)));
+			signal?.addEventListener('abort', done, { once: true });
+		});
 	}
 }
 
@@ -121,7 +136,18 @@ export type PeerChannels = {
 	/** Resolves when both channels are open; rejects if either dies first. */
 	ready(): Promise<void>;
 	sendControl(msg: ControlMessage): void;
-	sendSegment(reqId: number, payload: Uint8Array, signal?: AbortSignal): Promise<void>;
+	/**
+	 * Rejects with an AbortError if the requester cancels (`cancelOutbound`),
+	 * whether that lands mid-send or arrived before the bytes were ready.
+	 */
+	sendSegment(reqId: number, payload: Uint8Array): Promise<void>;
+	/**
+	 * The remote no longer wants `reqId` (its `segCancel`). Stops the send if
+	 * one is running and refuses it if it has yet to start: on a seek the
+	 * abandoned segments would otherwise be pushed to completion through the
+	 * uplink ahead of the one the viewer is now waiting for.
+	 */
+	cancelOutbound(reqId: number): void;
 	onControl(cb: (msg: ControlMessage) => void): () => void;
 	onSegment(cb: (reqId: number, payload: Uint8Array) => void): () => void;
 	cancelInbound(reqId: number): void;
@@ -129,10 +155,6 @@ export type PeerChannels = {
 	onClose(cb: () => void): () => void;
 	close(): void;
 };
-
-function abortError(): DOMException {
-	return new DOMException('sendSegment aborted', 'AbortError');
-}
 
 export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChannels {
 	const control = pc.createDataChannel('control', {
@@ -191,6 +213,14 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 	const gateWaiters = new Set<() => void>();
 	/** Insertion-ordered, so the oldest entry is the one to evict. */
 	const cancelled = new Set<number>();
+	/** Sends in flight, by the remote's reqId, so its `segCancel` can stop one. */
+	const sending = new Map<number, AbortController>();
+	/**
+	 * Cancels that arrived before their send began. The bytes for a request are
+	 * often still being read or encoded when the requester gives up on it, and a
+	 * cancel that only reached running sends would miss exactly those.
+	 */
+	const cancelledOutbound = new Set<number>();
 
 	let bytesSent = 0;
 	let bytesRecv = 0;
@@ -250,6 +280,9 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 		gateWaiters.clear();
 		reassembler.clear();
 		cancelled.clear();
+		for (const c of sending.values()) c.abort();
+		sending.clear();
+		cancelledOutbound.clear();
 
 		const cbs = [...closeCbs];
 		closeCbs.clear();
@@ -376,20 +409,41 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 			bytesSent += raw.length;
 		},
 
-		async sendSegment(reqId: number, payload: Uint8Array, signal?: AbortSignal): Promise<void> {
-			const chunks = chunk(payload);
-			const total = chunks.length;
-			for (let i = 0; i < total; i++) {
-				if (signal?.aborted) throw abortError();
-				await gate(signal);
-				await spend(chunks[i]!.byteLength + HEADER_BYTES);
-				if (signal?.aborted) throw abortError();
-				if (data.readyState !== 'open') {
-					throw new Error(`channel: link to ${peerId} closed after ${i}/${total} chunks`);
+		async sendSegment(reqId: number, payload: Uint8Array): Promise<void> {
+			if (cancelledOutbound.delete(reqId)) throw abortError();
+			const controller = new AbortController();
+			const { signal } = controller;
+			sending.set(reqId, controller);
+			try {
+				const chunks = chunk(payload);
+				const total = chunks.length;
+				for (let i = 0; i < total; i++) {
+					if (signal.aborted) throw abortError();
+					await gate(signal);
+					await spend(chunks[i]!.byteLength + HEADER_BYTES, signal);
+					if (signal.aborted) throw abortError();
+					if (data.readyState !== 'open') {
+						throw new Error(`channel: link to ${peerId} closed after ${i}/${total} chunks`);
+					}
+					const frame = encodeFrame(WireMsgType.SegData, reqId, i, total, chunks[i]);
+					data.send(frame);
+					bytesSent += frame.byteLength;
 				}
-				const frame = encodeFrame(WireMsgType.SegData, reqId, i, total, chunks[i]);
-				data.send(frame);
-				bytesSent += frame.byteLength;
+			} finally {
+				if (sending.get(reqId) === controller) sending.delete(reqId);
+			}
+		},
+
+		cancelOutbound(reqId: number): void {
+			const controller = sending.get(reqId);
+			if (controller) {
+				controller.abort();
+				return;
+			}
+			cancelledOutbound.add(reqId);
+			if (cancelledOutbound.size > CANCEL_MEMORY) {
+				const oldest = cancelledOutbound.values().next().value;
+				if (oldest !== undefined) cancelledOutbound.delete(oldest);
 			}
 		},
 

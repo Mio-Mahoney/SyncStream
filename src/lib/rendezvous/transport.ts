@@ -39,9 +39,22 @@ export function isStrategyName(x: unknown): x is StrategyName {
 	return typeof x === 'string' && (STRATEGY_NAMES as readonly string[]).includes(x);
 }
 
+/**
+ * How far a connection to one peer has got, as seen from underneath the
+ * rendezvous library.
+ *
+ * - `discovered`: the peer's SDP reached us over the relay. Someone is in the
+ *   room and answering, whether or not a connection to them ever opens.
+ * - `connected` / `failed`: how that connection ended up.
+ *
+ * `onPeerJoin` cannot tell these apart from silence: it fires only once the
+ * connection is up, so a peer we found and could not reach looks exactly like
+ * a room with nobody in it.
+ */
+export type NegotiationEvent = 'discovered' | 'connected' | 'failed';
+
 export type RendezvousSession = {
 	readonly strategy: StrategyName;
-	readonly selfId: string;
 
 	/**
 	 * The raw RTCPeerConnection for a peer.
@@ -56,6 +69,8 @@ export type RendezvousSession = {
 	peers(): string[];
 	onPeerJoin(cb: (peerId: string) => void): void;
 	onPeerLeave(cb: (peerId: string) => void): void;
+	/** See `NegotiationEvent`. Returns the unsubscribe. */
+	onNegotiation(cb: (e: NegotiationEvent) => void): () => void;
 	leave(): Promise<void>;
 };
 

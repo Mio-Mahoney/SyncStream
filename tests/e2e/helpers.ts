@@ -156,8 +156,17 @@ export async function dropFile(page: Page, file: { name: string; type: string; b
 	await page.dispatchEvent('body', 'drop', { dataTransfer: dt });
 }
 
-export async function openGuest(ctx: BrowserContext, code: string, opts?: StrategyOptions) {
-	const page = await ctx.newPage();
+/**
+ * `into` is a page the caller already made, for a test that has to prepare it
+ * (an init script, say) before the app loads in it.
+ */
+export async function openGuest(
+	ctx: BrowserContext,
+	code: string,
+	opts?: StrategyOptions,
+	into?: Page
+) {
+	const page = into ?? (await ctx.newPage());
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
 	await page.goto(appPath(`/room/${code}?debug=1&${strategyParam(opts)}`));

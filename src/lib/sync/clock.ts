@@ -111,6 +111,18 @@ export class ClockSync {
 	}
 
 	/**
+	 * Drop every sample: the offset they describe was measured against one host
+	 * page's clock and says nothing about another's. Pings again at once if
+	 * running, since until a pong lands the guest follows play/pause only.
+	 */
+	reset(): void {
+		this.window.length = 0;
+		this.best = null;
+		this.pending.clear();
+		if (this.timer !== null) this.ping();
+	}
+
+	/**
 	 * `receivedAt` must come from nowMs(). Pass the channel's own arrival
 	 * timestamp when you have one: any delay between arrival and this call
 	 * inflates rtt and biases offset by half of it.

@@ -12,7 +12,7 @@
  */
 
 import type { ControlMessage } from '$lib/protocol/control';
-import type { RendezvousSession, StrategyName } from '$lib/rendezvous/transport';
+import type { RendezvousSession } from '$lib/rendezvous/transport';
 import { type PeerChannels, attachChannels } from '$lib/rtc/channel';
 import { type CandidateType, selectedCandidateType } from '$lib/rtc/ice';
 
@@ -20,7 +20,6 @@ export type PeerLink = {
 	peerId: string;
 	pc: RTCPeerConnection;
 	channels: PeerChannels;
-	strategy: StrategyName;
 	/** Re-read on every ICE transition, so it tracks a mid-session ICE restart. */
 	candidateType: CandidateType;
 };
@@ -145,7 +144,6 @@ export function createPeerNetwork(sessions: RendezvousSession[]): PeerNetwork {
 			peerId,
 			pc,
 			channels,
-			strategy: session.strategy,
 			candidateType: 'unknown'
 		};
 

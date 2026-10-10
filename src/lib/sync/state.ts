@@ -78,16 +78,28 @@ export class HostState {
 	private timer: ReturnType<typeof setInterval> | null = null;
 	/** True only when *we* stopped playback, which is what makes resume() safe. */
 	private autoPaused = false;
-	private reason: string | null = null;
+	private leadIn = 0;
 
 	constructor(video: HTMLMediaElement, broadcast: (s: State) => void) {
 		this.video = video;
 		this.broadcast = broadcast;
 	}
 
-	/** Why the barrier stopped the room, for the host's own UI. */
-	get pauseReason(): string | null {
-		return this.reason;
+	/**
+	 * How far the room's clock runs ahead of this element's, in seconds.
+	 *
+	 * `mediaTime` on the wire is a position in the stream guests play. A host
+	 * playing the file straight off disk is on the file's own timeline, which
+	 * starts later than the stream's by the stream's lead-in
+	 * (`Origin.leadInSec`), so every time that crosses the wire is converted
+	 * here, in both directions. Zero when the host plays the stream itself.
+	 */
+	get leadInSec(): number {
+		return this.leadIn;
+	}
+
+	setLeadIn(seconds: number): void {
+		this.leadIn = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
 	}
 
 	start(): void {
@@ -119,7 +131,7 @@ export class HostState {
 		return {
 			t: 'state',
 			playing: !this.video.paused,
-			mediaTime: this.video.currentTime,
+			mediaTime: this.video.currentTime + this.leadIn,
 			atHostClock: nowMs(),
 			seq: ++this.seq
 		};
@@ -136,7 +148,6 @@ export class HostState {
 				// An explicit play overrides the barrier's brake; it must not be
 				// undone by a later resume().
 				this.autoPaused = false;
-				this.reason = null;
 				this.play();
 				break;
 			case 'pause':
@@ -145,7 +156,7 @@ export class HostState {
 				break;
 			case 'seek':
 				if (!Number.isFinite(i.mediaTime)) return;
-				this.video.currentTime = clampToMedia(this.video, i.mediaTime);
+				this.video.currentTime = clampToMedia(this.video, i.mediaTime - this.leadIn);
 				break;
 			default:
 				return;
@@ -160,8 +171,7 @@ export class HostState {
 	 * is resumable: if the host had already paused deliberately, the barrier
 	 * lifting must not start the movie behind their back.
 	 */
-	pause(reason?: string): void {
-		this.reason = reason ?? null;
+	pause(): void {
 		if (this.video.paused) return;
 		this.autoPaused = true;
 		this.video.pause();
@@ -169,7 +179,6 @@ export class HostState {
 	}
 
 	resume(): void {
-		this.reason = null;
 		if (!this.autoPaused) return;
 		this.autoPaused = false;
 		this.play();
@@ -223,6 +232,16 @@ export class GuestSync {
 		}
 		// Never leave a nudge on an element we no longer steer.
 		this.setRate(1);
+	}
+
+	/**
+	 * Forget the host we were following. `seq` is minted per host page, so a new
+	 * page starts again at 1, and without this every state it sent would lose to
+	 * the last one its predecessor did for as long as that predecessor ran.
+	 */
+	reset(): void {
+		this.state = null;
+		this.err = 0;
 	}
 
 	apply(s: State): void {
@@ -342,6 +361,8 @@ export class ReadinessBarrier {
 	private readonly peers = new Map<string, PeerHealth>();
 	private enabled: boolean;
 	private engaged = false;
+	/** Someone played through the current hold; see `override`. */
+	private overridden = false;
 	private announced: BlockedPeer[] = [];
 	private timer: ReturnType<typeof setInterval> | null;
 
@@ -359,8 +380,27 @@ export class ReadinessBarrier {
 		this.timer = setInterval(() => this.sweep(), HEARTBEAT_MS);
 	}
 
-	/** The guests currently blocking the room. */
+	/** The guests the room is being held for. Nobody, once the hold was overridden. */
 	get waitingOn(): BlockedPeer[] {
+		return this.overridden ? [] : this.blocking();
+	}
+
+	/**
+	 * An explicit play through the hold. The room stops waiting, and stays that
+	 * way until everyone has caught up: re-engaging on the next status tick
+	 * would pause the film a second after someone deliberately started it.
+	 *
+	 * Returns whether there was a hold to override, so the caller knows whether
+	 * a banner needs taking down.
+	 */
+	override(): boolean {
+		if (!this.engaged || this.overridden) return false;
+		this.overridden = true;
+		this.announced = [];
+		return true;
+	}
+
+	private blocking(): BlockedPeer[] {
 		if (!this.enabled) return [];
 		const now = nowMs();
 		const out: BlockedPeer[] = [];
@@ -424,14 +464,16 @@ export class ReadinessBarrier {
 	}
 
 	private evaluate(): void {
-		const on = this.waitingOn;
+		const on = this.blocking();
 		if (on.length === 0) {
 			if (!this.engaged) return;
 			this.engaged = false;
+			this.overridden = false;
 			this.announced = [];
 			this.onResume();
 			return;
 		}
+		if (this.overridden) return;
 		// Re-fire while engaged when the list itself changes, so "Waiting for
 		// Jamie" becomes "Waiting for Sam" rather than going stale.
 		if (this.engaged && samePeers(on, this.announced)) return;

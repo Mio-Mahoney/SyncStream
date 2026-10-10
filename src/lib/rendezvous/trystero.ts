@@ -22,6 +22,7 @@
 import {
 	STRATEGY_ORDER,
 	type JoinOptions,
+	type NegotiationEvent,
 	type RendezvousSession,
 	type SignalingTransport,
 	type StrategyName
@@ -46,7 +47,7 @@ const LOCAL_RELAY_URL: string | undefined = import.meta.env.VITE_LOCAL_RELAY;
  * relay on a slow link, short enough that a dead relay does not hold a room
  * code hostage.
  */
-export const CONNECT_TIMEOUT_MS = 8000;
+const CONNECT_TIMEOUT_MS = 8000;
 
 const RELAY_POLL_MS = 50;
 
@@ -132,9 +133,76 @@ async function awaitOpenRelay(
 	}
 }
 
-function makeSession(strategy: StrategyName, selfId: string, room: Room): RendezvousSession {
+const negotiationCbs = new Set<(e: NegotiationEvent) => void>();
+
+/**
+ * Everything reported since the current join began, replayed to whoever
+ * subscribes. A join only resolves once its relay is confirmed up, and a peer
+ * already in the room can answer inside that wait - before there is a session
+ * for anyone to be listening on. Same reason `onPeerJoin` replays.
+ */
+let negotiationLog: NegotiationEvent[] = [];
+
+function reportNegotiation(e: NegotiationEvent): void {
+	negotiationLog.push(e);
+	for (const cb of [...negotiationCbs]) cb(e);
+}
+
+/** A new join is a new room as far as this page is concerned: one at a time. */
+function beginNegotiationLog(): void {
+	negotiationLog = [];
+}
+
+let watched: typeof RTCPeerConnection | null = null;
+
+/**
+ * The RTCPeerConnection trystero builds its peers from, with two listeners on
+ * it. Handed over through `rtcPolyfill`, the config slot trystero provides for
+ * supplying the constructor.
+ *
+ * trystero says nothing about a peer until its connection is up, and by then
+ * there is nothing left to learn: the case that matters is the peer whose SDP
+ * arrived over the relay and whose ICE then failed, which is what a NAT that
+ * STUN cannot traverse looks like (PLAN.md 9). Its own `onJoinError` does
+ * report that, but only when its 23s negotiation timer runs out, which is
+ * after a guest's whole strategy budget has been spent concluding the room is
+ * empty. The connection knows sooner, so it is asked directly.
+ *
+ * A remote description is the proof of discovery: it can only have come from
+ * another peer, through the relay, in answer to this room's announce. The
+ * pre-built offers in trystero's pool never get one until that happens, so
+ * they stay silent here.
+ *
+ * Built on first use, not at import: this module is loaded while the page is
+ * prerendered, where RTCPeerConnection does not exist to extend.
+ */
+function watchedPeerConnection(): typeof RTCPeerConnection {
+	watched ??= class extends RTCPeerConnection {
+		constructor(config?: RTCConfiguration) {
+			super(config);
+			let discovered = false;
+			let settled = false;
+			this.addEventListener('signalingstatechange', () => {
+				if (discovered || !this.remoteDescription) return;
+				discovered = true;
+				reportNegotiation('discovered');
+			});
+			this.addEventListener('connectionstatechange', () => {
+				if (!discovered || settled) return;
+				const st = this.connectionState;
+				if (st !== 'connected' && st !== 'failed') return;
+				settled = true;
+				reportNegotiation(st);
+			});
+		}
+	};
+	return watched;
+}
+
+function makeSession(strategy: StrategyName, room: Room): RendezvousSession {
 	const joinCbs = new Set<(peerId: string) => void>();
 	const leaveCbs = new Set<(peerId: string) => void>();
+	const offNegotiation = new Set<() => void>();
 
 	// trystero's onPeerJoin/onPeerLeave are single assignable slots, not an
 	// emitter. Assigning one fan-out handler is what lets several consumers
@@ -151,7 +219,6 @@ function makeSession(strategy: StrategyName, selfId: string, room: Room): Rendez
 
 	return {
 		strategy,
-		selfId,
 		getPeerConnection: (peerId) => room.getPeers()[peerId],
 		peers: () => Object.keys(room.getPeers()),
 
@@ -171,6 +238,17 @@ function makeSession(strategy: StrategyName, selfId: string, room: Room): Rendez
 			leaveCbs.add(cb);
 		},
 
+		onNegotiation(cb) {
+			for (const e of [...negotiationLog]) cb(e);
+			negotiationCbs.add(cb);
+			const off = () => {
+				negotiationCbs.delete(cb);
+				offNegotiation.delete(off);
+			};
+			offNegotiation.add(off);
+			return off;
+		},
+
 		async leave() {
 			// trystero deletes its room registration only after leave()'s
 			// internal grace timer, and re-joining the same id before that
@@ -180,6 +258,7 @@ function makeSession(strategy: StrategyName, selfId: string, room: Room): Rendez
 			left = true;
 			joinCbs.clear();
 			leaveCbs.clear();
+			for (const off of [...offNegotiation]) off();
 			await room.leave();
 		}
 	};
@@ -204,17 +283,21 @@ const nostr: SignalingTransport = {
 	async join(roomId, opts?: JoinOptions) {
 		// The root export IS the nostr strategy in 0.25; there is no
 		// 'trystero/nostr' that works.
-		const { joinRoom, selfId, getRelaySockets } = await import('trystero');
+		const { joinRoom, getRelaySockets } = await import('trystero');
 		opts?.signal?.throwIfAborted();
+		beginNegotiationLog();
 
-		const room = joinRoom({ appId: APP_ID, rtcConfig: RTC_CONFIG }, roomId);
+		const room = joinRoom(
+			{ appId: APP_ID, rtcConfig: RTC_CONFIG, rtcPolyfill: watchedPeerConnection() },
+			roomId
+		);
 		try {
 			await awaitOpenRelay(getRelaySockets as RelaySockets, 'nostr', opts?.signal);
 		} catch (err) {
 			await abandon(room);
 			throw err;
 		}
-		return makeSession('nostr', selfId, room);
+		return makeSession('nostr', room);
 	}
 };
 
@@ -223,17 +306,21 @@ const mqtt: SignalingTransport = {
 	isConfigured: () => true,
 
 	async join(roomId, opts?: JoinOptions) {
-		const { joinRoom, selfId, getRelaySockets } = await import('@trystero-p2p/mqtt');
+		const { joinRoom, getRelaySockets } = await import('@trystero-p2p/mqtt');
 		opts?.signal?.throwIfAborted();
+		beginNegotiationLog();
 
-		const room = joinRoom({ appId: APP_ID, rtcConfig: RTC_CONFIG }, roomId);
+		const room = joinRoom(
+			{ appId: APP_ID, rtcConfig: RTC_CONFIG, rtcPolyfill: watchedPeerConnection() },
+			roomId
+		);
 		try {
 			await awaitOpenRelay(getRelaySockets as RelaySockets, 'mqtt', opts?.signal);
 		} catch (err) {
 			await abandon(room);
 			throw err;
 		}
-		return makeSession('mqtt', selfId, room);
+		return makeSession('mqtt', room);
 	}
 };
 
@@ -247,11 +334,17 @@ const local: SignalingTransport = {
 	isConfigured: () => Boolean(LOCAL_RELAY_URL),
 
 	async join(roomId, opts?: JoinOptions) {
-		const { joinLocalRoom, selfId, getLocalRelaySockets } = await import('$lib/rendezvous/local');
+		const { joinLocalRoom, getLocalRelaySockets } = await import('$lib/rendezvous/local');
 		opts?.signal?.throwIfAborted();
+		beginNegotiationLog();
 
 		const room = joinLocalRoom(
-			{ appId: APP_ID, rtcConfig: RTC_CONFIG, relayConfig: { urls: [LOCAL_RELAY_URL!] } },
+			{
+				appId: APP_ID,
+				rtcConfig: RTC_CONFIG,
+				rtcPolyfill: watchedPeerConnection(),
+				relayConfig: { urls: [LOCAL_RELAY_URL!] }
+			},
 			roomId
 		);
 		try {
@@ -260,7 +353,7 @@ const local: SignalingTransport = {
 			await abandon(room);
 			throw err;
 		}
-		return makeSession('local', selfId, room);
+		return makeSession('local', room);
 	}
 };
 

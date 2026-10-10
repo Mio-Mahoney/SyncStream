@@ -12,9 +12,8 @@
  */
 
 import shaka from 'shaka-player/dist/shaka-player.compiled.js';
+import { SCHEME } from '$lib/media/manifest';
 import { INIT_SEGMENT, type Track } from '$lib/protocol/control';
-
-export const SCHEME = 'syncstream';
 
 /**
  * Resolves segment bytes, or rejects. Implementations turn this into a `segReq`
@@ -41,16 +40,9 @@ export type SegmentFetcher = (
 	signal: AbortSignal
 ) => Promise<Uint8Array>;
 
-/**
- * The one URI shape. The manifest's SegmentTemplate substitutes
- * `$RepresentationID$` and `$Number$` into exactly this, so any change here is
- * a change to manifest.ts and vice versa.
- */
-export function segmentUri(repId: number, track: Track, segIdx: number): string {
-	const tail = segIdx === INIT_SEGMENT ? 'init' : `seg/${segIdx}`;
-	return `${SCHEME}://rep/${repId}/${track}/${tail}`;
-}
-
+// The one URI shape, and the read side of it: manifest.ts writes exactly this
+// into its SegmentTemplate, from the same SCHEME, so the two cannot drift.
+//
 // `rep` lands in the authority position, which keeps the URI absolute under
 // Shaka's RFC 3986 resolution against the manifest URI. Nothing else relies on
 // it. Digits only: $Number$ is never negative, and the init sentinel is spelled

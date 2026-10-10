@@ -190,8 +190,6 @@ export type ControlMessage =
 	| SourcesReq
 	| SourcesRes;
 
-export type ControlType = ControlMessage['t'];
-
 /** Key for a segment in caches, `have` sets, and the mesh tracker. */
 export function segKey(repId: number, track: Track, segIdx: number): string {
 	return `${repId}/${track}/${segIdx}`;

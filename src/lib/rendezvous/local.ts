@@ -40,8 +40,6 @@ import {
 	type StrategyMessage
 } from '@trystero-p2p/core';
 
-export { selfId } from '@trystero-p2p/core';
-
 /** The three frames a client sends, and the one a relay does. */
 type WireFrame =
 	| { t: 'sub'; topic: string }

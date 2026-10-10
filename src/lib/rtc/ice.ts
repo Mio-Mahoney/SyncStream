@@ -63,7 +63,7 @@ function turnServer(): RTCIceServer | null {
  * fallback for peers that cannot connect directly, never the default path, or
  * every room would relay its video through someone else's bandwidth bill.
  */
-export function buildRtcConfig(): RTCConfiguration {
+function buildRtcConfig(): RTCConfiguration {
 	const turn = turnServer();
 	return {
 		iceServers: turn ? [{ urls: STUN_URLS }, turn] : [{ urls: STUN_URLS }],
@@ -74,9 +74,6 @@ export function buildRtcConfig(): RTCConfiguration {
 }
 
 export const RTC_CONFIG: RTCConfiguration = buildRtcConfig();
-
-/** Whether a TURN server is configured, for the debug overlay and diagnostics. */
-export const HAS_TURN = turnServer() !== null;
 
 export type CandidateType = 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown';
 

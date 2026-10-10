@@ -42,17 +42,7 @@ export type PeerStat = {
 	/** Seconds of media buffered past the playhead. Read off the peer's status. */
 	bufferedAhead: number;
 	rung: number | null;
-	/** Milliseconds, the min-RTT sample ClockSync selected. */
-	rtt: number;
 	candidateType: CandidateType;
-	/**
-	 * Bytes sitting in SCTP, matching ChannelStats.outboundQueue: the data and
-	 * control channels summed. Not the gate's own reading -- backpressure is
-	 * measured against `data.bufferedAmount` alone, so this sits slightly above
-	 * it and can exceed HIGH_WATER on control traffic without the gate being at
-	 * fault. Read it as link occupancy, not as the gate's input.
-	 */
-	outboundQueue: number;
 };
 
 export type SyncStreamStats = {
@@ -79,7 +69,10 @@ export type SyncStreamStats = {
 	rung: number | null;
 	/** Rungs the origin is willing to advertise right now (PLAN.md 4.2). */
 	availableRungs: number[];
-	/** Segment requests outstanding. */
+	/**
+	 * Segment requests outstanding. On the host, the ones it is reading, encoding
+	 * or sending right now; on a guest, the ones still waiting on the host.
+	 */
 	segmentQueue: number;
 	playing: boolean;
 	/** Seconds. The media element's currentTime. */
@@ -131,7 +124,7 @@ function initial(): SyncStreamStats {
 }
 
 /**
- * The live object. Deeply reactive, so `stats.peers[0].rtt = 12` re-renders the
+ * The live object. Deeply reactive, so `stats.peers[0].rung = 2` re-renders the
  * overlay. Exported as a const and mutated in place: a rune module cannot export
  * a reassigned binding, and every importer holds this identity.
  */
@@ -172,9 +165,7 @@ const PEER_DEFAULTS: Omit<PeerStat, 'peerId'> = {
 	throughputBps: 0,
 	bufferedAhead: 0,
 	rung: null,
-	rtt: 0,
-	candidateType: 'unknown',
-	outboundQueue: 0
+	candidateType: 'unknown'
 };
 
 /**
@@ -207,7 +198,7 @@ export function removePeer(peerId: string): void {
  * throw. `$state.snapshot` walks the proxy and rebuilds plain objects and
  * arrays, which is what crosses.
  */
-export function snapshotStats(): SyncStreamStats {
+function snapshotStats(): SyncStreamStats {
 	return $state.snapshot(stats);
 }
 

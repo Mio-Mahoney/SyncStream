@@ -94,6 +94,15 @@ ffmpeg -y -loglevel error $(src_video 30 1280x720 30) $(src_audio 30) \
 	-x265-params "keyint=60:min-keyint=60:scenecut=0:log-level=error" \
 	-c:a aac -b:a 128k -movflags +faststart hevc.mp4
 
+echo "==> edit-list.mp4 - trimmed without re-encoding, so the trim is an edit list"
+# What a phone's trim tool or a stream-copy cut produces: every sample is kept
+# and an elst says where playback really starts. A <video> honours that, so a
+# stream cut from the raw sample times shows a different moment of the film at
+# the same reading of the clock. Cut from tiny-60s.mp4 rather than encoded
+# fresh, because the shape under test is the copy itself: -ss 5 lands a second
+# into a 2s GOP, which is the mid-GOP edit start that is hardest to honour.
+ffmpeg -y -loglevel error -ss 5 -i tiny-60s.mp4 -t 20 -c copy -movflags +faststart edit-list.mp4
+
 if [[ "${1:-}" == "--large" ]]; then
 	echo "==> large-2gb.mp4 (gitignored, slow) - the Phase 0 reproduction file"
 	# shellcheck disable=SC2046
