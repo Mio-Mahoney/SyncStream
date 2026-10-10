@@ -19,6 +19,21 @@ import { BASE, LOCAL_RELAY_PORT, LOCAL_RELAY_URL } from './tests/e2e/base';
  * Note also that WebCodecs requires a secure context, so tests must run against
  * http://localhost (which qualifies) and never about:blank.
  */
+/**
+ * Env-overridable because the port is an identity, not just an address: with
+ * `reuseExistingServer` on, whoever is listening here IS the app under test.
+ * Two checkouts (say, parallel agent worktrees) running the suite at once on
+ * one fixed port silently test each other's build -- measured: a foreign
+ * preview server on 4173 served a build with no mesh instrumentation at all,
+ * and every mesh assertion in this suite read zero against code that was
+ * never running. Give each concurrent run its own PW_PORT.
+ *
+ * This covers the app server only. The signaling relay's port is a shared
+ * constant in tests/e2e/base.ts (three readers must agree on it), so two runs
+ * on different PW_PORTs still share one relay.
+ */
+const PORT = Number(process.env.PW_PORT ?? 4173);
+
 export default defineConfig({
 	testDir: './tests/e2e',
 	// WebRTC + real encoding is slow; these are integration tests, not unit tests.
@@ -37,7 +52,7 @@ export default defineConfig({
 		// goto() against this with `new URL()`, and a leading-slash path replaces
 		// the whole path rather than appending to it, silently dropping the prefix.
 		// Tests build paths with `appPath()` instead, which is explicit.
-		baseURL: 'http://localhost:4173',
+		baseURL: `http://localhost:${PORT}`,
 		trace: 'retain-on-failure',
 		video: 'off',
 		// Locator calls like textContent() default to NO timeout, so a query for
@@ -87,8 +102,8 @@ export default defineConfig({
 	 */
 	webServer: [
 		{
-			command: 'bun run build && bun run preview --port 4173 --strictPort',
-			port: 4173,
+			command: `bun run build && bun run preview --port ${PORT} --strictPort`,
+			port: PORT,
 			reuseExistingServer: !process.env.CI,
 			timeout: 180_000,
 			// The build and the tests must agree on the base path, or the suite

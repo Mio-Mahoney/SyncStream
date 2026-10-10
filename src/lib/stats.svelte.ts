@@ -77,6 +77,13 @@ export type SyncStreamStats = {
 	drift: number;
 	/** Rung currently being played, null before the first variant is chosen. */
 	rung: number | null;
+	/**
+	 * Bits/sec, Shaka's own ABR estimate. The rung above is a function of this
+	 * and nothing else, which is why it is recorded beside it: under Phase 5 the
+	 * mesh changes what the link can carry, and this is the only way to tell a
+	 * guest reading its link honestly from one whose estimator went blind.
+	 */
+	bandwidthEstimate: number;
 	/** Rungs the origin is willing to advertise right now (PLAN.md 4.2). */
 	availableRungs: number[];
 	/** Segment requests outstanding. */
@@ -118,6 +125,7 @@ function initial(): SyncStreamStats {
 		clockOffset: 0,
 		drift: 0,
 		rung: null,
+		bandwidthEstimate: 0,
 		availableRungs: [],
 		segmentQueue: 0,
 		playing: false,
