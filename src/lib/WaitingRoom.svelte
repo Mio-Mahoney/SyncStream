@@ -38,6 +38,7 @@
 		| 'unreachable'
 		| 'ended'
 		| 'invalid'
+		| 'insecure'
 		| 'rejected'
 		| 'opening'
 		| 'unopened';
@@ -45,6 +46,8 @@
 	let {
 		phase,
 		code,
+		/** Where this page was loaded from, for the `insecure` phase to name. */
+		address = '',
 		hostName = '',
 		/** Per-strategy diagnostics from a RendezvousError: `failed`, `unreachable` or `unopened`. */
 		attempts = [] as readonly string[],
@@ -57,6 +60,7 @@
 	}: {
 		phase: Phase;
 		code: string;
+		address?: string;
 		hostName?: string;
 		attempts?: readonly string[];
 		reason?: string;
@@ -216,6 +220,29 @@
 		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
 			A room has to be announced through a public relay before anyone can join it, and that didn't
 			get through. Relays come and go, so trying again often works.
+		</p>
+	{:else if phase === 'insecure'}
+		<!--
+			Nothing was looked for, like `invalid`, and for a reason the reader
+			cannot see: the address works, the page loads, and everything on it
+			looks ready. It is the browser that refuses, silently, to let a page
+			served over plain http from another machine use the encryption the
+			connection is made with.
+
+			It names the address because the address is the whole problem, and it
+			names both ways out because which one applies depends on what the
+			reader was doing: trying the app out across two of their own computers
+			(use the https site on both), or sitting at the one that serves it
+			(use localhost there).
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">This address can't connect</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			Browsers only allow the encryption a watch party runs on over https, or on the computer
+			serving the page. This one was opened over plain http{address ? ` at ${address}` : ''}, so it
+			can't reach anyone.
+		</p>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			Open the site at its https address instead, on every computer that is joining.
 		</p>
 	{:else if phase === 'invalid'}
 		<!--
