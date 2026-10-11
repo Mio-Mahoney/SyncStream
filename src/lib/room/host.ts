@@ -270,7 +270,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			if (barrier.override()) announceWaiting([]);
 		}
 		// A seek leaves it alone: it does not stop or start the film, so whoever
-		// stopped it still stopped it.
+		// stopped it still stopped it. It does end a played-through barrier hold.
+		else barrier.rearm();
 		state.applyIntent(i);
 		if (i.action !== 'seek') announcePause();
 	};

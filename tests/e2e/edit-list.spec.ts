@@ -65,6 +65,17 @@ test('a film trimmed with an edit list shows host and guest the same frame', asy
 		{ what: 'first frame', timeout: 60_000 }
 	);
 
+	// Read before anything seeks, since a seek far enough ahead lets the player
+	// drop what it had. Nothing of the film is missing from the front of the guest's copy. A stream
+	// that starts on the edit instead of on its keyframe loses the whole first
+	// GOP, and the guest's picture begins a second or more after the host's.
+	const start = await guest.evaluate(() => {
+		const v = document.querySelector('video') as HTMLVideoElement;
+		return v.buffered.length > 0 ? v.buffered.start(0) : -1;
+	});
+	expect(start, "the guest's film must be buffered from its first frame").toBeGreaterThanOrEqual(0);
+	expect(start).toBeLessThan(0.1);
+
 	const durationOf = (p: Page) =>
 		p.evaluate(() => (document.querySelector('video') as HTMLVideoElement).duration);
 	const lead = (await durationOf(guest)) - (await durationOf(page));
@@ -108,14 +119,4 @@ test('a film trimmed with an edit list shows host and guest the same frame', asy
 		nearest,
 		`host and guest at 8s must be the same frame (frames a trim apart differ over ${(apart * 100).toFixed(1)}% of the picture)`
 	).toBeLessThan(apart / 4);
-
-	// Nothing of the film is missing from the front of the guest's copy. A stream
-	// that starts on the edit instead of on its keyframe loses the whole first
-	// GOP, and the guest's picture begins a second or more after the host's.
-	const start = await guest.evaluate(() => {
-		const v = document.querySelector('video') as HTMLVideoElement;
-		return v.buffered.length > 0 ? v.buffered.start(0) : -1;
-	});
-	expect(start, "the guest's film must be buffered from its first frame").toBeGreaterThanOrEqual(0);
-	expect(start).toBeLessThan(0.1);
 });

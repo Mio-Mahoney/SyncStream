@@ -387,8 +387,9 @@ export class ReadinessBarrier {
 
 	/**
 	 * An explicit play through the hold. The room stops waiting, and stays that
-	 * way until everyone has caught up: re-engaging on the next status tick
-	 * would pause the film a second after someone deliberately started it.
+	 * way until everyone has caught up or the room seeks (`rearm`): re-engaging
+	 * on the next status tick would pause the film a second after someone
+	 * deliberately started it.
 	 *
 	 * Returns whether there was a hold to override, so the caller knows whether
 	 * a banner needs taking down.
@@ -398,6 +399,20 @@ export class ReadinessBarrier {
 		this.overridden = true;
 		this.announced = [];
 		return true;
+	}
+
+	/**
+	 * A seek ends whatever an override forgave. The override was a decision
+	 * about the stall on screen when somebody pressed play; a seek puts the
+	 * whole room somewhere nobody has loaded yet, and a guest who cannot keep
+	 * up there is a new stall, not the old one. Holding the override through it
+	 * let the film run on with a guest silently left behind - a room started
+	 * during its opening hold and then seeked never waited for anyone again.
+	 */
+	rearm(): void {
+		if (!this.overridden) return;
+		this.overridden = false;
+		this.evaluate();
 	}
 
 	private blocking(): BlockedPeer[] {
