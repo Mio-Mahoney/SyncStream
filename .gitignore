@@ -48,8 +48,3 @@ skills-lock.json
 /*.avi
 /*.webm
 tests/fixtures/real-movie.mp4
-
-# GSD planning artifacts. Kept local by choice (config.json commit_docs:false):
-# this is one person planning one milestone, and the roadmap is working notes
-# rather than repo documentation. PLAN.md is the committed account of the design.
-.planning/
