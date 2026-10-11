@@ -57,8 +57,10 @@ Nothing may construct a URL by hand -- route it through `$app/paths` or it will 
 
 The card a messenger shows for a pasted link comes from the `og:` tags in `src/app.html` and the image at `static/og.png` (regenerate it with `bun run og`). Two things make it work on a static host:
 
-- `og:image` must be an absolute URL, so the build needs to know its origin. CI passes it as `PUBLIC_ORIGIN`; set it yourself when deploying elsewhere (`PUBLIC_ORIGIN=https://example.com bun run build`).
-- The invite link is `/?room=CODE`, not `/room/CODE`. Crawlers only read tags off a 200 response, and on GitHub Pages a room path is answered with `404.html`. `src/hooks.ts` serves the room at the invite address; `/room/CODE` links still open.
+- `og:image` must be an absolute URL, so the build needs to know its origin. CI passes it as `PUBLIC_ORIGIN`; set it yourself when deploying elsewhere (`PUBLIC_ORIGIN=https://example.com bun run build`). A build without it still works, and warns that its cards will have no image.
+- A room's address is `/?room=CODE`, not `/room/CODE`. Crawlers only read tags off a 200 response, and on GitHub Pages a room path is answered with `404.html`. `src/hooks.ts` serves the room at that address; `/room/CODE` links sent before the change still open.
+
+The sentence on the card, in the tags and on the landing page is one string in `src/lib/copy.ts`. The image is committed, so re-run `bun run og` after editing it.
 
 ## Test
 

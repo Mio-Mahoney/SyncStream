@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { nameYourself, openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
-import { appPath } from './base';
+import { appPath, BASE } from './base';
 
 /**
  * The guest's screen before there is a video on it.
@@ -83,6 +83,47 @@ test('an invite link with a broken code says so too', async ({ page }) => {
 	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
 });
 
+for (const dots of ['.', '..']) {
+	test(`an invite whose code is "${dots}" is a broken link, not a different page`, async ({
+		page
+	}) => {
+		// A URL collapses dot segments, so carried into the room path as-is these
+		// climbed out of it: `..` rendered the start page as though no code had
+		// been given, and `.` matched no route at all.
+		await page.goto(appPath(`/?room=${dots}`));
+
+		await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'invalid');
+		await expect(page.getByTestId('waiting-title')).toHaveText("That link isn't a room");
+	});
+}
+
+// The root as hosts and messengers rewrite it. Each is the same file to the
+// host, so each has to be the same room to the guest.
+const ROOT_SPELLINGS = ['/index.html', ...(BASE ? [''] : [])];
+for (const root of ROOT_SPELLINGS) {
+	test(`an invite on "${BASE}${root}" opens the room like one on the root`, async ({ page }) => {
+		await page.goto(appPath(`${root}?room=K7M4PQ&s=local`));
+
+		await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'searching');
+		await expect(page.getByTestId('room-code')).toHaveText('K7M4PQ');
+	});
+}
+
+test('an invite lowercased in transit opens the room it names', async ({ page }) => {
+	// The join box has always read `k7m4pq` out of a pasted link as K7M4PQ.
+	// Opening that same link has to agree, parameter name included.
+	for (const query of ['?room=k7m4pq&s=local', '?ROOM=K7M4PQ&s=local']) {
+		await page.goto(appPath(`/${query}`));
+		await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'searching');
+		await expect(page.getByTestId('room-code')).toHaveText('K7M4PQ');
+	}
+
+	// And on the room's own path, the shape older invites had.
+	await page.goto(appPath('/room/k7m4pq?s=local'));
+	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'searching');
+	await expect(page.getByTestId('room-code')).toHaveText('K7M4PQ');
+});
+
 test('an address that is no page at all gets a way back, not a bare 404', async ({ page }) => {
 	// Neither the start page nor a room, so the room's own dead ends never load.
 	// This used to be SvelteKit's unstyled "404 Not Found" with nothing to click.
@@ -94,6 +135,23 @@ test('an address that is no page at all gets a way back, not a bare 404', async 
 
 	await page.getByTestId('go-home').click();
 	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
+});
+
+test('a page that fails to load says so, and offers a reload', async ({ page }) => {
+	// The one way the error page is reached with anything but a 404: the files
+	// for the next page cannot be fetched. Nodes 0 and 1 are the layout and the
+	// error page itself, which are what is left to draw with.
+	await page.goto(appPath('/'));
+	await expect(page.getByRole('heading', { name: 'SyncStream' })).toBeVisible();
+	await page.route(/\/_app\/immutable\/nodes\/(?![01]\.)/, (route) => route.abort());
+
+	await page.getByText('Create room').click();
+
+	await expect(page.getByTestId('error-page')).toHaveAttribute('data-status', '500');
+	await expect(page.getByTestId('error-title')).toHaveText('Something went wrong');
+	await expect(page.getByTestId('reload')).toBeVisible();
+	await expect(page.getByTestId('error-details')).toBeAttached();
+	await expect(page.getByTestId('go-home')).toBeVisible();
 });
 
 test('a broken code is a dead end for a would-be host too', async ({ page }) => {

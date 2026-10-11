@@ -19,8 +19,13 @@
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
 	import { startGuestRoom, type GuestRoom } from '$lib/room/guest';
-	import { RendezvousError, STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
-	import { isValidRoomCode } from '$lib/rendezvous/codes';
+	import {
+		CREATE_PARAM,
+		RendezvousError,
+		roomQuery,
+		strategyFromParams
+	} from '$lib/rendezvous/room';
+	import { isValidRoomCode, parseRoomCode } from '$lib/rendezvous/codes';
 
 	// Reactive because the control bar takes it as a prop: bind:this only assigns
 	// after the first render, so a plain `let` would hand the bar a permanent
@@ -31,10 +36,12 @@
 	/** The picker that opens under a playing film. Below the fold where it mounts. */
 	let changePicker = $state<HTMLElement>();
 
-	const code = $derived(page.params.id ?? '');
+	// Read as a link's code is read anywhere: a room path lowercased in transit
+	// names the same room. What is not a code is kept as it came, to be refused.
+	const code = $derived(parseRoomCode(page.params.id ?? '') ?? page.params.id ?? '');
 	// The share link never carries `create`, so a guest opening it can never
 	// race the host for the same code.
-	const isHost = $derived(page.url.searchParams.get('create') === '1');
+	const isHost = $derived(page.url.searchParams.get(CREATE_PARAM) === '1');
 
 	/**
 	 * What the host actually announced. Normally the URL's code, but an
@@ -330,13 +337,12 @@
 			// A collision was resolved by regenerating. Keep the address bar
 			// honest so a reload re-hosts the room that actually exists -- on the
 			// same strategy, which the reload can only learn from the URL.
-			const path = resolve('/room/[id]', { id: host.code });
 			const strategy = strategyFromParams(page.url.searchParams);
-			const query = strategy ? `?create=1&${STRATEGY_PARAM}=${strategy}` : '?create=1';
+			const query = roomQuery(host.code, { create: true, strategy });
 			// The path IS resolved. The rule only recognises a bare resolve() call
 			// and cannot see through appending a query string to one.
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
-			replaceState(`${path}${query}`, {});
+			replaceState(`${resolve('/')}${query}`, {});
 		}
 	}
 

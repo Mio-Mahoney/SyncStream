@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { CODE_LENGTH } from '$lib/rendezvous/codes';
+	import DeadEndActions from '$lib/DeadEndActions.svelte';
 	import NameTag from '$lib/NameTag.svelte';
 	import Presence from '$lib/Presence.svelte';
+	import StatusCard from '$lib/StatusCard.svelte';
 
 	/**
 	 * The screen for a room with no video on it - mostly a guest's, and every
@@ -88,11 +89,7 @@
 	const showOthers = $derived((phase === 'found' || phase === 'rejected') && others.length > 0);
 </script>
 
-<section
-	class="mt-12 w-full max-w-md rounded-xl border border-moonstone-200 bg-white/70 p-8 text-center"
-	data-testid="waiting-room"
-	data-phase={phase}
->
+<StatusCard data-testid="waiting-room" data-phase={phase}>
 	{#if phase === 'searching' || phase === 'found' || phase === 'rejected' || phase === 'opening'}
 		<!--
 			The spinner is the only thing on this screen that distinguishes "working
@@ -217,27 +214,17 @@
 
 	{#if phase === 'failed' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
 		<!--
-			Every dead end used to be a line of text and nothing else: the only way
-			out was editing the URL. `failed` gets a retry because a host who is
-			merely slow to open the room makes it succeed on the second press, and
-			`unopened` because the relay that would not answer is not the same relay
-			a second attempt reaches. `invalid` gets none - the same broken code
-			cannot start working, so the button would be a lie.
+			`failed` gets a retry because a host who is merely slow to open the room
+			makes it succeed on the second press, and `unopened` because the relay
+			that would not answer is not the same relay a second attempt reaches.
+			`invalid` gets none - the same broken code cannot start working - and
+			neither does `ended`.
 		-->
-		<div class="mt-6 flex justify-center gap-3">
-			{#if phase === 'failed' || phase === 'unopened'}
-				<button
-					onclick={onRetry}
-					class="rounded border border-tangerine-600 bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500 active:bg-tangerine-600"
-					data-testid="retry">Try again</button
-				>
-			{/if}
-			<a
-				href={resolve('/')}
-				class="rounded border bg-moonstone-100 px-4 py-2 transition hover:bg-moonstone-200 active:bg-moonstone-300"
-				data-testid="go-home">Back to start</a
-			>
-		</div>
+		<DeadEndActions
+			retry={phase === 'failed' || phase === 'unopened'
+				? { label: 'Try again', testid: 'retry', onclick: onRetry }
+				: undefined}
+		/>
 	{/if}
 
 	{#if canBeNamed && onRename}
@@ -280,4 +267,4 @@
 			</ul>
 		</details>
 	{/if}
-</section>
+</StatusCard>

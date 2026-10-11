@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
 	fixture,
 	inviteLink,
@@ -10,7 +12,7 @@ import {
 	until,
 	videoTime
 } from './helpers';
-import { BASE } from './base';
+import { BASE, BUILD } from './base';
 
 /**
  * PLAN.md Phase 2's acceptance criterion, at fixture scale.
@@ -99,6 +101,13 @@ test('the link the host copies is the link a guest can actually open', async ({
 	// crawler needs before it will build a card for the link (src/hooks.ts).
 	expect(url.pathname, 'the invite link must carry the app base path').toBe(`${BASE}/`);
 	expect(url.searchParams.get('room'), 'the invite link names the room').toBe(code);
+	// Asserted against the build tree, because the server under test cannot
+	// tell: vite preview rewrites every path to the shell with a 200, so a link
+	// back on a room path would pass anything that asked it for a status.
+	expect(
+		existsSync(join(BUILD, url.pathname.slice(BASE.length), 'index.html')),
+		'the invite link must be a file a rewrite-less host serves with a 200'
+	).toBe(true);
 	// PLAN.md 4.6: the link names the strategy that actually carried the room, so
 	// the guest tries the one the host is on first rather than walking the ladder.
 	expect(url.searchParams.get('s'), 'the link names the rendezvous strategy').toBeTruthy();

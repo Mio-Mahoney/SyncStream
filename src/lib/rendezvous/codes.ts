@@ -54,19 +54,55 @@ export function normalizeRoomCode(input: string): string {
 }
 
 /**
+ * Reads a code out of a link, where `normalizeRoomCode` reads one out of typing.
+ *
+ * Case is forgiven, because links get lowercased in transit and the code is no
+ * less certain for it. Nothing else is: a link is copied, not typed, so a
+ * character outside the alphabet means the link is damaged, and salvaging six
+ * good characters from it would name some other room.
+ *
+ * This is the one definition of "a link that names a room". The join box reads
+ * a pasted link with it, and `hooks.ts` and the room page read an opened one
+ * with it, so a link cannot be good in one and broken in the other.
+ */
+export function parseRoomCode(value: string): string | null {
+	const raw = value.trim();
+	const code = normalizeRoomCode(raw);
+	return isValidRoomCode(code) && code.length === raw.length ? code : null;
+}
+
+/**
  * The query parameter an invite link carries its code in: `/?room=K7M4PQ`.
  * `hooks.ts` is what makes that address serve the room, and says why the invite
  * is not simply the room's own path.
  */
 export const ROOM_PARAM = 'room';
 
+/**
+ * The raw value of a URL's room parameter, or null if it has none. The name is
+ * matched in any case for the reason the code is: `?ROOM=` is the same link
+ * after a rough trip, and the join box has always read it as one.
+ */
+export function roomParam(params: URLSearchParams): string | null {
+	for (const [name, value] of params) {
+		if (name.toLowerCase() === ROOM_PARAM) return value;
+	}
+	return null;
+}
+
 /** Anything that looks like a URL or a path, rather than a typed code. */
 const LOOKS_LIKE_LINK = new RegExp(`^\\w+://|/room/|[?&]${ROOM_PARAM}=`, 'i');
 /**
  * Both shapes a link has had: the invite's query, and the room's own path -
- * which is what the address bar shows a host, and what older invites were.
+ * which is what every invite was before the code moved into the query.
+ *
+ * Two patterns, tried in that order, and the path one anchored to the end of
+ * the path. A single "whichever comes first" pattern read the wrong token out
+ * of any address with a `/room/` ahead of the real code, which a deploy under
+ * such a base path would put in every link it mints.
  */
-const ROOM_IN_LINK = new RegExp(`(?:/room/|[?&]${ROOM_PARAM}=)([^/?#&]+)`, 'i');
+const ROOM_IN_QUERY = new RegExp(`[?&]${ROOM_PARAM}=([^&#]*)`, 'i');
+const ROOM_IN_PATH = /\/room\/([^/?#]+)\/?(?:[?#]|$)/i;
 
 export function looksLikeLink(input: string): boolean {
 	return LOOKS_LIKE_LINK.test(input.trim());
@@ -85,14 +121,12 @@ export function looksLikeLink(input: string): boolean {
  * a host racing the real one for the same code.
  */
 export function roomCodeFromLink(input: string): string | null {
-	const match = ROOM_IN_LINK.exec(input.trim());
+	const link = input.trim();
+	const match = ROOM_IN_QUERY.exec(link) ?? ROOM_IN_PATH.exec(link);
 	if (!match) return null;
-	let path: string;
 	try {
-		path = decodeURIComponent(match[1]);
+		return parseRoomCode(decodeURIComponent(match[1]));
 	} catch {
 		return null; // A malformed %-escape is not a code.
 	}
-	const code = normalizeRoomCode(path);
-	return isValidRoomCode(code) && code.length === path.length ? code : null;
 }

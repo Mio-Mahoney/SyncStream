@@ -1,10 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import { appPath } from './base';
-
-const build = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'build');
+import { join } from 'node:path';
+import { appPath, BUILD as build, ORIGIN } from './base';
+import { DESCRIPTION } from '../../src/lib/copy';
 
 const walk = (dir: string, out: string[] = []): string[] => {
 	for (const e of readdirSync(dir)) {
@@ -84,16 +82,25 @@ test('the build carries what a rewrite-less static host needs', () => {
  */
 test('the shell carries link-preview tags a crawler can read without running it', () => {
 	const shell = readFileSync(join(build, 'index.html'), 'utf8');
-	const tag = (property: string): string | undefined =>
-		new RegExp(`<meta\\s+property="${property}"\\s+content="([^"]*)"`).exec(shell)?.[1];
+	const tag = (name: string): string | undefined =>
+		new RegExp(`<meta\\s+(?:property|name)="${name}"\\s+content="([^"]*)"`).exec(shell)?.[1];
 
 	expect(tag('og:title'), 'og:title').toBeTruthy();
-	expect(tag('og:description'), 'og:description').toBeTruthy();
 	expect(shell, 'a large card needs twitter:card').toContain('name="twitter:card"');
 
-	// Under the base path, or the card image 404s on a Pages project site.
-	expect(tag('og:image'), 'og:image must carry the app base path').toMatch(
-		new RegExp(`${appPath('/og.png')}$`)
+	// The same sentence the landing page shows and the card image is drawn
+	// with, from the one place it is written down (src/lib/copy.ts).
+	expect(tag('og:description'), 'og:description').toBe(DESCRIPTION);
+	expect(tag('description'), 'meta description').toBe(DESCRIPTION);
+	expect(tag('og:image:alt'), 'og:image:alt').toContain(DESCRIPTION);
+	expect(shell, 'a placeholder reached the shell unfilled').not.toMatch(/%app\.\w+%/);
+
+	// The whole URL, not its tail. A crawler rejects a relative og:image, which
+	// is what an unset origin leaves behind; the base path is what keeps it from
+	// 404ing on a Pages project site; and the build is handed its origin with a
+	// trailing slash (playwright.config.ts), which must not double up here.
+	expect(tag('og:image'), 'og:image must be the absolute, base-prefixed URL').toBe(
+		`${ORIGIN}${appPath('/og.png')}`
 	);
 	expect(walk(build), 'og:image points at a file the build did not emit').toContain('og.png');
 });

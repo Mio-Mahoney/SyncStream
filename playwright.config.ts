@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { BASE, LOCAL_RELAY_PORT, LOCAL_RELAY_URL } from './tests/e2e/base';
+import { BASE, LOCAL_RELAY_PORT, LOCAL_RELAY_URL, ORIGIN } from './tests/e2e/base';
 
 /**
  * PLAN.md 8.
@@ -93,7 +93,11 @@ export default defineConfig({
 			timeout: 180_000,
 			// The build and the tests must agree on the base path, or the suite
 			// navigates to paths the server does not serve.
-			env: { BASE_PATH: BASE, VITE_LOCAL_RELAY: LOCAL_RELAY_URL }
+			//
+			// The origin is given a trailing slash on purpose. It is the form an
+			// address copied from a browser arrives in, and joined on naively it
+			// puts `//og.png` in the one URL a preview crawler has to fetch.
+			env: { BASE_PATH: BASE, VITE_LOCAL_RELAY: LOCAL_RELAY_URL, PUBLIC_ORIGIN: `${ORIGIN}/` }
 		},
 		{
 			command: 'bun tests/e2e/local-relay.ts',

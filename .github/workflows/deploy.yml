@@ -3,8 +3,9 @@
 #
 # BASE_PATH is the load-bearing setting. A Pages *project* site serves under
 # /<repo>/, and SvelteKit has to build with that prefix or every asset 404s.
-# Point a custom domain here later and this becomes an empty string, with no
-# code change: see svelte.config.js.
+# Point a custom domain here later and it becomes an empty string, with no
+# change to this file or the code: Pages reports where it serves the site from
+# and the build is told that. See svelte.config.js.
 name: Deploy to GitHub Pages
 
 on:
@@ -38,16 +39,26 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
-      # Only for its `origin` output: the scheme and host Pages serves this
-      # site from, which follows a custom domain if one is ever configured.
+      # For its outputs: where Pages serves this site from, as a scheme and
+      # host (`origin`) and a path prefix (`base_path`). Both follow a custom
+      # domain if one is ever configured, and they have to be taken together:
+      # the og:image URL is one appended to the other.
       - id: pages
         uses: actions/configure-pages@v5
 
+      # An empty origin builds a site that works and whose every invite has no
+      # image on its card, with nothing red anywhere to say so.
+      - name: Require the Pages origin
+        if: steps.pages.outputs.origin == ''
+        run: |
+          echo "::error::configure-pages reported no origin, so og:image would not be an absolute URL"
+          exit 1
+
       - name: Build
         env:
-          # Must match the repo name exactly; it is the URL prefix Pages serves
-          # this site under.
-          BASE_PATH: /${{ github.event.repository.name }}
+          # The URL prefix Pages serves this site under: /<repo> for a project
+          # site, empty on a custom domain.
+          BASE_PATH: ${{ steps.pages.outputs.base_path }}
           # Link-preview crawlers only accept an absolute og:image, and a static
           # build cannot know where it will be served from (src/app.html).
           PUBLIC_ORIGIN: ${{ steps.pages.outputs.origin }}

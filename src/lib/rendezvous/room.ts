@@ -349,18 +349,49 @@ export async function joinRoomByCode(
 	);
 }
 
+/** Marks an address as the host's own. Never part of a link that is shared. */
+export const CREATE_PARAM = 'create';
+
 /**
- * Builds the share link's query string (PLAN.md 4.6: `/?room=ABC123&s=nostr`).
- * The whole link is this on the app's root - see `hooks.ts` for why the code
- * rides here and not in the path. The host has connected before the link
- * exists, so `primary` is always known and correct.
+ * The query that makes the app's root a room's address: `/?room=ABC123&s=nostr`
+ * (PLAN.md 4.6), with `create=1` on the host's. See `hooks.ts` for why the code
+ * rides here and not in the path.
+ *
+ * Every address the app mints goes through this - the invite, the one a guest
+ * lands on from the join box, and the host's own - so a room has one address
+ * shape however it was entered, and it is the shape a static host answers with
+ * a 200.
  */
-export function shareLinkQuery(code: string, primary: StrategyName): string {
-	return `?${new URLSearchParams({ [ROOM_PARAM]: code, [STRATEGY_PARAM]: primary }).toString()}`;
+export function roomQuery(
+	code: string,
+	opts: { strategy?: StrategyName; create?: boolean } = {}
+): string {
+	const params = new URLSearchParams({ [ROOM_PARAM]: code });
+	if (opts.create) params.set(CREATE_PARAM, '1');
+	if (opts.strategy) params.set(STRATEGY_PARAM, opts.strategy);
+	return `?${params.toString()}`;
 }
 
-/** The read side of `shareLinkQuery`, for the guest. */
+/**
+ * The share link's query. The host has connected before the link exists, so
+ * `primary` is always known and correct.
+ */
+export function shareLinkQuery(code: string, primary: StrategyName): string {
+	return roomQuery(code, { strategy: primary });
+}
+
+/** The read side of `roomQuery`'s strategy, for whoever opens the address. */
 export function strategyFromParams(params: URLSearchParams): StrategyName | undefined {
 	const s = params.get(STRATEGY_PARAM);
 	return isStrategyName(s) ? s : undefined;
+}
+
+/**
+ * The strategy a pasted invite link names. Pasting the link into the join box
+ * is a second way of opening it, so it has to try the host's strategy first the
+ * way opening it does, rather than walk the whole ladder.
+ */
+export function strategyFromLink(link: string): StrategyName | undefined {
+	const query = /\?([^#]*)/.exec(link)?.[1];
+	return query ? strategyFromParams(new URLSearchParams(query)) : undefined;
 }

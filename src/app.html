@@ -15,30 +15,26 @@
 			why the copy reads correctly both for someone deciding whether to try
 			the app and for someone who was just sent a room.
 
+			The %app.*% placeholders are filled in by src/hooks.server.ts as the
+			shell is built. The description is the landing page's own sentence and
+			the one drawn on the card image, kept in one place (src/lib/copy.ts) so
+			the three cannot drift apart.
+
 			og:image has to be absolute, and a static build cannot know its own
 			origin, so the deploy supplies it (PUBLIC_ORIGIN, see deploy.yml).
 			Without it the address is root-relative: fine locally, where no crawler
-			is looking.
+			is looking, and the build says so.
 		-->
-		<meta
-			name="description"
-			content="Play a video off your own disk and watch it together, in sync. Nothing uploads anywhere."
-		/>
+		<meta name="description" content="%app.description%" />
 		<meta property="og:type" content="website" />
 		<meta property="og:site_name" content="SyncStream" />
 		<meta property="og:title" content="SyncStream - watch a video together, in sync" />
-		<meta
-			property="og:description"
-			content="Play a video off your own disk and watch it together, in sync. Nothing uploads anywhere."
-		/>
-		<meta property="og:image" content="%sveltekit.env.PUBLIC_ORIGIN%%sveltekit.assets%/og.png" />
+		<meta property="og:description" content="%app.description%" />
+		<meta property="og:image" content="%app.origin%%sveltekit.assets%/og.png" />
 		<meta property="og:image:type" content="image/png" />
 		<meta property="og:image:width" content="1200" />
 		<meta property="og:image:height" content="630" />
-		<meta
-			property="og:image:alt"
-			content="SyncStream: watch a video together, in sync. Nothing uploads anywhere."
-		/>
+		<meta property="og:image:alt" content="SyncStream: %app.description%" />
 		<meta name="twitter:card" content="summary_large_image" />
 		%sveltekit.head%
 	</head>

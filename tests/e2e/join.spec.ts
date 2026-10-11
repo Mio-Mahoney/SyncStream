@@ -20,8 +20,40 @@ test('pasting the invite link the host copied joins that room', async ({ page, b
 	// waited in forever with no error to explain it.
 	await expect(input).toHaveValue(CODE);
 
+	// Joined at the address the link itself has, strategy included: the box is a
+	// second way to open the link, not a way to open a lesser version of it. The
+	// landing page here pins no strategy of its own, so `s` can only have come
+	// from the paste.
 	await page.getByRole('button', { name: 'Join' }).click();
-	await expect(page).toHaveURL(new RegExp(`/room/${CODE}$`));
+	await expect(page).toHaveURL(new RegExp(`${appPath('/')}[?]room=${CODE}&s=local$`));
+	await expect(page.getByTestId('room-code')).toHaveText(CODE);
+});
+
+test('a typed code joins at the invite address too', async ({ page }) => {
+	// One address for a guest however they got in, and the one a static host
+	// answers with a 200: a link copied out of this address bar is a working
+	// invite with a preview card, the same as the one the host sent.
+	await page.goto(appPath('/?s=local'));
+	await page.getByLabel('Room code').fill(CODE);
+
+	await page.getByRole('button', { name: 'Join' }).click();
+	await expect(page).toHaveURL(new RegExp(`${appPath('/')}[?]room=${CODE}&s=local$`));
+	await expect(page.getByTestId('room-code')).toHaveText(CODE);
+});
+
+test('the code is read from where the app would read it, not the first thing like it', async ({
+	page
+}) => {
+	await page.goto(appPath('/'));
+	const input = page.getByLabel('Room code');
+
+	// A `/room/` earlier in the address is not the room: here it is a path
+	// with nothing after it, and on some deploy it could be the base path.
+	await input.fill(`https://example.com/room/?room=${CODE}`);
+	await expect(input).toHaveValue(CODE);
+
+	await input.fill(`https://example.com/room/app/?room=${CODE.toLowerCase()}`);
+	await expect(input).toHaveValue(CODE);
 });
 
 test('a link to the room page itself is read the same way', async ({ page, baseURL }) => {

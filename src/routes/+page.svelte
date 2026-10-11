@@ -10,7 +10,9 @@
 		roomCodeFromLink,
 		CODE_LENGTH
 	} from '$lib/rendezvous/codes';
-	import { STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
+	import { roomQuery, strategyFromLink, strategyFromParams } from '$lib/rendezvous/room';
+	import type { StrategyName } from '$lib/rendezvous/transport';
+	import { DESCRIPTION } from '$lib/copy';
 
 	let roomCode = $state('');
 	let error = $state('');
@@ -18,17 +20,30 @@
 	const canJoin = $derived(isValidRoomCode(roomCode));
 
 	/**
-	 * A valid `?s=` on this page rides along to the room, as `&s=...` or
-	 * `?s=...` per what precedes it. The room page is where the strategy is
-	 * read, and this page sits in front of it: without the forward, opening the
-	 * app with a strategy pinned (the e2e suite pinning `local`, or someone
-	 * reproducing a relay bug with `nostr`) would shed it on the first click.
-	 * Validated rather than passed through, so a garbage value dies here
-	 * instead of riding into every URL the room mints.
+	 * The strategy the last pasted link named. Cleared by any edit that is not a
+	 * link: a code typed over it may be for another room, and a strategy is only
+	 * known for the room whose link said so.
 	 */
-	function strategyCarry(hasQuery: boolean): string {
-		const s = strategyFromParams(page.url.searchParams);
-		return s ? `${hasQuery ? '&' : '?'}${STRATEGY_PARAM}=${s}` : '';
+	let linkStrategy = $state<StrategyName | undefined>();
+
+	/**
+	 * Goes to a room, at the same address its invite link has (`hooks.ts`), so a
+	 * room has one address however it was entered.
+	 *
+	 * A strategy rides along: the one a pasted link named, or else a valid `?s=`
+	 * on this page. The room page is where it is read, and this page sits in
+	 * front of it - without the forward, opening the app with a strategy pinned
+	 * (the e2e suite pinning `local`, or someone reproducing a relay bug with
+	 * `nostr`) would shed it on the first click. Validated rather than passed
+	 * through, so a garbage value dies here instead of riding into every URL the
+	 * room mints.
+	 */
+	function enter(code: string, opts: { create?: boolean; strategy?: StrategyName } = {}) {
+		const strategy = opts.strategy ?? strategyFromParams(page.url.searchParams);
+		// The path IS resolved. The rule only recognises a bare resolve() call and
+		// cannot see through appending a query string to one.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		goto(`${resolve('/')}${roomQuery(code, { create: opts.create, strategy })}`);
 	}
 
 	function join() {
@@ -36,11 +51,7 @@
 			error = `Room codes are ${CODE_LENGTH} characters.`;
 			return;
 		}
-		const path = resolve('/room/[id]', { id: roomCode });
-		// The path IS resolved. The rule only recognises a bare resolve() call and
-		// cannot see through appending a query string to one.
-		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		goto(`${path}${strategyCarry(false)}`);
+		enter(roomCode, { strategy: linkStrategy });
 	}
 
 	function createRoom() {
@@ -49,11 +60,7 @@
 		// race the host for the same code. It has to survive a reload, so it is a
 		// query param rather than navigation state: a host who refreshes must
 		// still be the host, or the room dies under them.
-		const path = resolve('/room/[id]', { id: generateRoomCode() });
-		// The path IS resolved. The rule only recognises a bare resolve() call and
-		// cannot see through appending a query string to one.
-		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		goto(`${path}?create=1${strategyCarry(true)}`);
+		enter(generateRoomCode(), { create: true });
 	}
 
 	/**
@@ -63,9 +70,11 @@
 	 */
 	function onInput() {
 		error = '';
+		linkStrategy = undefined;
 		if (looksLikeLink(roomCode)) {
 			const fromLink = roomCodeFromLink(roomCode);
 			if (fromLink) {
+				linkStrategy = strategyFromLink(roomCode);
 				roomCode = fromLink;
 				return;
 			}
@@ -87,7 +96,7 @@
 <main class="flex min-h-screen flex-col items-center justify-center px-6 py-12 font-sans">
 	<h1 class="mb-3 text-center text-5xl">SyncStream</h1>
 	<p class="mb-10 max-w-md text-center text-moonstone-800">
-		Play a video off your own disk and watch it together, in sync. Nothing uploads anywhere.
+		{DESCRIPTION}
 	</p>
 
 	<div class="w-full max-w-sm">

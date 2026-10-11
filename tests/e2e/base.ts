@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url';
+
 /**
  * The base path the suite runs the app under.
  *
@@ -11,6 +13,16 @@
  * build uses and the value the tests navigate to from drifting apart.
  */
 export const BASE = process.env.BASE_PATH ?? '/SyncStream';
+
+/**
+ * The origin the suite's build is told it deploys to (PUBLIC_ORIGIN), which is
+ * what makes its og:image absolute. Nothing is served from it: it exists so the
+ * suite builds the way a deploy does, and can hold the tag to the whole URL.
+ */
+export const ORIGIN = 'https://syncstream.test';
+
+/** The build tree, for claims about what a static host would actually be handed. */
+export const BUILD = fileURLToPath(new URL('../../build', import.meta.url));
 
 /** An app-relative path, prefixed with the base the app is served under. */
 export const appPath = (path: string): string => `${BASE}${path}`;

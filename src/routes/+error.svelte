@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
+	import DeadEndActions from '$lib/DeadEndActions.svelte';
+	import StatusCard from '$lib/StatusCard.svelte';
 
 	/**
 	 * Every dead end that is not a room's own.
@@ -12,10 +13,10 @@
 	 * bare "404 Not Found", which reads as the site being broken rather than the
 	 * link.
 	 *
-	 * Built to the same card as WaitingRoom's dead ends on purpose. To the person
-	 * holding the link it is the same situation - the film is not going to play
-	 * from here, now what? - and it should not look like a different product
-	 * answering.
+	 * Built from the same card and the same way out as WaitingRoom's dead ends
+	 * (StatusCard, DeadEndActions) on purpose. To the person holding the link it
+	 * is the same situation - the film is not going to play from here, now what? -
+	 * and it should not look like a different product answering.
 	 */
 	const missing = $derived(page.status === 404);
 	const title = $derived(missing ? 'Page not found' : 'Something went wrong');
@@ -26,11 +27,7 @@
 </svelte:head>
 
 <main class="flex min-h-screen flex-col items-center px-4 py-6 font-sans">
-	<section
-		class="mt-12 w-full max-w-md rounded-xl border border-moonstone-200 bg-white/70 p-8 text-center"
-		data-testid="error-page"
-		data-status={page.status}
-	>
+	<StatusCard data-testid="error-page" data-status={page.status}>
 		{#if missing}
 			<h1 class="text-lg font-medium" data-testid="error-title">There's nothing at this address</h1>
 			<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
@@ -42,7 +39,10 @@
 				Not worded as the reader's mistake, and not as the room's: nothing
 				here knows which room, if any, they were in. Reloading is offered
 				first because it is what fixes the one cause this realistically has -
-				a tab left open across a deploy, asking for files that were replaced.
+				the files for the page they were going to could not be fetched, on a
+				connection that dropped for a moment. (A tab left open across a deploy
+				asks for files that are gone too, but never arrives here: SvelteKit
+				sees the new version and reloads by itself.)
 			-->
 			<h1 class="text-lg font-medium" data-testid="error-title">Something went wrong</h1>
 			<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
@@ -50,20 +50,11 @@
 			</p>
 		{/if}
 
-		<div class="mt-6 flex justify-center gap-3">
-			{#if !missing}
-				<button
-					onclick={() => location.reload()}
-					class="rounded border border-tangerine-600 bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500 active:bg-tangerine-600"
-					data-testid="reload">Reload</button
-				>
-			{/if}
-			<a
-				href={resolve('/')}
-				class="rounded border bg-moonstone-100 px-4 py-2 transition hover:bg-moonstone-200 active:bg-moonstone-300"
-				data-testid="go-home">Back to start</a
-			>
-		</div>
+		<DeadEndActions
+			retry={missing
+				? undefined
+				: { label: 'Reload', testid: 'reload', onclick: () => location.reload() }}
+		/>
 
 		{#if !missing && page.error?.message}
 			<!-- Worth keeping for a bug report, worth hiding from someone here for a film. -->
@@ -79,5 +70,5 @@
 				</p>
 			</details>
 		{/if}
-	</section>
+	</StatusCard>
 </main>
