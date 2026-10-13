@@ -1,4 +1,4 @@
-import { expect, type BrowserContext, type Page } from '@playwright/test';
+import { expect, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { appPath } from './base';
@@ -46,6 +46,7 @@ export type Snapshot = {
 		name: string;
 		role: string;
 		bufferedAhead: number;
+		atEnd: boolean;
 		rung: number | null;
 	}[];
 	ttff: number | null;
@@ -115,6 +116,64 @@ export const videoTime = (page: Page) =>
 		const v = document.querySelector('video') as HTMLVideoElement | null;
 		return v ? v.currentTime : -1;
 	});
+
+/** Keep EOF evidence together because file and MSE durations can differ slightly. */
+export const videoEndState = (page: Page) =>
+	page.evaluate(() => {
+		const video = document.querySelector('video')!;
+		return {
+			ended: video.ended,
+			paused: video.paused,
+			currentTime: video.currentTime,
+			duration: video.duration,
+			bufferedEnd: video.buffered.length ? video.buffered.end(video.buffered.length - 1) : 0
+		};
+	});
+
+/**
+ * A full watch must never hold; a seek may wait for data but must release the
+ * barrier at EOF. Natural host EOF can pause guests just shy of their own MSE
+ * duration, so keep that separate sync issue out of the readiness assertion.
+ */
+export async function expectFilmEnd(
+	page: Page,
+	guest: Page,
+	testInfo: TestInfo,
+	uninterrupted: boolean
+) {
+	const last = await until(
+		async () => {
+			const [host, hostVideo, guestVideo] = await Promise.all([
+				snapshot(page),
+				videoEndState(page),
+				videoEndState(guest)
+			]);
+			return {
+				playing: host.playing,
+				waitingOn: host.waitingOn,
+				hostVideo,
+				guestVideo,
+				guestFinished:
+					guestVideo.ended ||
+					(guestVideo.paused && guestVideo.currentTime >= guestVideo.duration - 0.25)
+			};
+		},
+		(s) =>
+			(uninterrupted && s.waitingOn.length > 0) ||
+			(s.hostVideo.ended && s.guestFinished && s.waitingOn.length === 0),
+		{ what: 'both viewers to finish without a stuck readiness barrier', timeout: 75_000 }
+	);
+	await testInfo.attach('end-state', {
+		body: JSON.stringify(last, null, 2),
+		contentType: 'application/json'
+	});
+	expect(last.waitingOn, `the film must finish without waiting: ${JSON.stringify(last)}`).toEqual(
+		[]
+	);
+	expect(last.hostVideo.ended).toBe(true);
+	expect(last.guestFinished).toBe(true);
+	await expect(guest.getByTestId('waiting')).toBeHidden();
+}
 
 /** Opens a room as host and stops at the picker, with no file chosen yet. */
 export async function openRoom(page: Page, opts?: StrategyOptions) {

@@ -111,6 +111,8 @@ export type Paused = { t: 'paused'; by: string | null; you: boolean };
 export type Status = {
 	t: 'status';
 	bufferedAhead: number;
+	/** Fully buffered through the ending, or already ended. Older guests omit it. */
+	atEnd?: boolean;
 	rung: number | null;
 	throughput: number;
 	name: string;

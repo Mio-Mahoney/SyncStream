@@ -465,6 +465,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				break;
 
 			case 'status': {
+				/** Missing or malformed flags must not exempt a guest from readiness. */
+				const atEnd = msg.atEnd === true;
 				// Through the same gate as the other two: this name reaches the
 				// barrier, and "Waiting for X to catch up" is the one sentence in the
 				// room that a stalled guest's own status message gets to write.
@@ -472,10 +474,11 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				guestNames.set(link.peerId, guestName);
 				updatePeer(link.peerId, {
 					bufferedAhead: msg.bufferedAhead,
+					atEnd,
 					rung: msg.rung,
 					throughputBps: msg.throughput
 				});
-				barrier.report(link.peerId, guestName, msg.bufferedAhead);
+				barrier.report(link.peerId, guestName, msg.bufferedAhead, atEnd);
 				// A rung change changes what the mesh plan asks owners to cover.
 				// Unconditional: announceMeshPlan's signature check makes the
 				// steady state free.

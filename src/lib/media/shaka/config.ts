@@ -190,6 +190,33 @@ export function playerBufferAhead(player: shaka.Player, video: HTMLMediaElement)
 }
 
 /**
+ * A fully buffered ending cannot refill past the film's duration. Tell the
+ * readiness barrier separately so honest buffer seconds do not deadlock it.
+ * The caller supplies its low watermark: within that distance of EOF there
+ * is no useful refill to wait for. It also covers the few hundred milliseconds
+ * between the MPD's longest track and the playable intersection's shortest.
+ * Only the playable range at the playhead counts; a later range across a gap
+ * or a truncated stream must still be allowed to block.
+ */
+export function playerAtEnd(
+	player: shaka.Player,
+	video: HTMLMediaElement,
+	endToleranceSec: number
+): boolean {
+	if (video.ended) return true;
+	const { currentTime, duration } = video;
+	if (!Number.isFinite(duration) || duration <= 0) return false;
+	return player
+		.getBufferedInfo()
+		.total.some(
+			(range) =>
+				currentTime >= range.start - RANGE_EPSILON_SEC &&
+				currentTime <= range.end + RANGE_EPSILON_SEC &&
+				range.end >= duration - endToleranceSec
+		);
+}
+
+/**
  * A Shaka failure as a sentence someone can act on.
  *
  * `shaka.util.Error.message` is "Shaka Error 4032" and nothing else, which is

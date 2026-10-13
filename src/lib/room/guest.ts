@@ -13,6 +13,7 @@ import {
 	createPlayer,
 	currentRung,
 	describePlaybackError,
+	playerAtEnd,
 	playerBufferAhead
 } from '$lib/media/shaka/config';
 import { registerSyncStreamScheme, unregisterSyncStreamScheme } from '$lib/media/shaka/scheme';
@@ -23,7 +24,7 @@ import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
 import { markFirstFrame, markTtffStart, removePeer, stats, updatePeer } from '$lib/stats.svelte';
 import { ClockSync } from '$lib/sync/clock';
-import { GuestSync } from '$lib/sync/state';
+import { BARRIER_LOW_SEC, GuestSync } from '$lib/sync/state';
 import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
 
 export type GuestRoom = {
@@ -630,6 +631,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		hostLink.channels.sendControl({
 			t: 'status',
 			bufferedAhead,
+			atEnd: playerAtEnd(player, opts.video, BARRIER_LOW_SEC),
 			rung,
 			throughput: hostLink.channels.stats.throughputBps,
 			name

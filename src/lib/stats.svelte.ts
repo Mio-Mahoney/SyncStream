@@ -41,6 +41,8 @@ export type PeerStat = {
 	throughputBps: number;
 	/** Seconds of media buffered past the playhead. Read off the peer's status. */
 	bufferedAhead: number;
+	/** End-ready peers need no extra buffer beyond the film's duration. */
+	atEnd: boolean;
 	rung: number | null;
 	candidateType: CandidateType;
 };
@@ -172,6 +174,7 @@ const PEER_DEFAULTS: Omit<PeerStat, 'peerId'> = {
 	role: 'guest',
 	throughputBps: 0,
 	bufferedAhead: 0,
+	atEnd: false,
 	rung: null,
 	candidateType: 'unknown'
 };

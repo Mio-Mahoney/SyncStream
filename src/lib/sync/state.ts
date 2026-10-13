@@ -425,7 +425,8 @@ export class ReadinessBarrier {
 		return out;
 	}
 
-	report(peerId: string, name: string, bufferedAhead: number): void {
+	/** End-ready peers cannot refill above the high watermark and need no hold. */
+	report(peerId: string, name: string, bufferedAhead: number, atEnd = false): void {
 		const now = nowMs();
 		let p = this.peers.get(peerId);
 		if (!p) {
@@ -438,7 +439,9 @@ export class ReadinessBarrier {
 		// A player that has not built a buffer range yet reports NaN. That is not
 		// evidence either way, so keep the peer's last verdict instead of
 		// inventing one -- but the report still proves it is alive.
-		if (Number.isFinite(bufferedAhead)) {
+		if (atEnd) {
+			p.blocking = false;
+		} else if (Number.isFinite(bufferedAhead)) {
 			if (p.blocking) {
 				if (bufferedAhead > BARRIER_HIGH_SEC) p.blocking = false;
 			} else if (bufferedAhead < BARRIER_LOW_SEC) {
