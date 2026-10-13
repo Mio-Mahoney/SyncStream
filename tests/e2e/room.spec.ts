@@ -325,12 +325,13 @@ test('a guest loading the opening is not told their connection fell behind', asy
 		(t) => t > 0.5,
 		{ what: 'the guest to start playing' }
 	);
+	/** The old 3 Mbps cap passed on the EOF deadlock, not a genuine mid-film stall. */
+	await throttle(page, 400_000);
 	await expect(guestNotice).toBeHidden();
 	await expect(hostNotice).toBeHidden();
-	await throttle(page, 3_000_000);
 	await until(
 		() => snapshot(page),
-		(s) => s.waitingOn.length > 0,
+		(s) => s.waitingOn.length > 0 && s.mediaTime < 50,
 		{
 			what: 'the barrier to trip again mid-film',
 			timeout: 60_000
