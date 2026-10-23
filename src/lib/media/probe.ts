@@ -22,6 +22,7 @@
 
 import { createFile, MP4BoxBuffer } from 'mp4box';
 import type { Box, ISOFile, Movie, SampleEntry, Track as Mp4Track } from 'mp4box';
+import type { FaultCode } from '$lib/protocol/control';
 import type {
 	AudioTrackInfo,
 	Capabilities,
@@ -651,31 +652,72 @@ async function sniffContainer(file: File): Promise<Container> {
 
 const REMUX_HINT = 'Remux it to MP4 first: ffmpeg -i input -c copy output.mp4';
 
-function unreadableReason(container: Container): string {
+/** A rejection the container alone decides: what it is, and what to do. */
+function unreadable(container: Container): { code: FaultCode; reason: string; remedy?: string } {
 	switch (container) {
 		case 'mp4':
-			return 'This MP4 has no readable moov box, the index that says where every frame lives, so the file is truncated or damaged.';
+			return {
+				code: 'damaged',
+				reason:
+					'This MP4 has no readable moov box, the index that says where every frame lives, so the file is truncated or damaged.'
+			};
 		case 'matroska':
-			return `This is a Matroska file (.mkv or .webm), not an MP4, and its layout is not one this app can read. ${REMUX_HINT}`;
+			return {
+				code: 'container',
+				reason:
+					'This is a Matroska file (.mkv or .webm), not an MP4, and its layout is not one this app can read.',
+				remedy: REMUX_HINT
+			};
 		case 'avi':
-			return `This is an AVI file, not an MP4. ${REMUX_HINT}`;
+			return { code: 'container', reason: 'This is an AVI file, not an MP4.', remedy: REMUX_HINT };
 		case 'ogg':
-			return `This is an Ogg file, not an MP4. ${REMUX_HINT}`;
+			return { code: 'container', reason: 'This is an Ogg file, not an MP4.', remedy: REMUX_HINT };
 		case 'flv':
-			return `This is a Flash Video file (.flv), not an MP4. ${REMUX_HINT}`;
+			return {
+				code: 'container',
+				reason: 'This is a Flash Video file (.flv), not an MP4.',
+				remedy: REMUX_HINT
+			};
 		default:
-			return `This file is not an MP4 or MOV container, so there is no moov box to read tracks from. ${REMUX_HINT}`;
+			return {
+				code: 'container',
+				reason:
+					'This file is not an MP4 or MOV container, so there is no moov box to read tracks from.',
+				remedy: REMUX_HINT
+			};
 	}
 }
+
+/**
+ * An MP4 that is already fragmented (fMP4/CMAF: `-movflags frag_keyframe`, a
+ * recorded MSE stream, a DASH segment file). Its sample table is spread across
+ * the moofs, so there is no complete index to plan a segment grid from without
+ * reading the whole file - the one thing the origin exists not to do. It used
+ * to pass the probe as `direct` and fail inside the origin with an internal
+ * string, after the previous film had already been torn down.
+ */
+const FRAGMENTED: { code: FaultCode; reason: string; remedy: string } = {
+	code: 'container',
+	reason:
+		'This MP4 is already fragmented (fMP4), so its index is spread through the file and the stream cannot be cut from it.',
+	remedy: 'Rewrite it as a plain MP4 first: ffmpeg -i input -c copy -movflags +faststart output.mp4'
+};
 
 // ---------------------------------------------------------------------------
 // Probe
 // ---------------------------------------------------------------------------
 
-function rejected(reason: string, capabilities: Capabilities): ProbeResult {
+function rejected(
+	code: FaultCode,
+	reason: string,
+	capabilities: Capabilities,
+	remedy?: string
+): ProbeResult {
 	return {
 		tier: 'reject',
 		reason,
+		code,
+		...(remedy ? { remedy } : {}),
 		video: null,
 		audio: null,
 		videoAction: 'none',
@@ -696,14 +738,23 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 	// answered by the parser than by a magic-number guess.
 	const container = await sniffContainer(file);
 	if (container !== 'mp4' && container !== 'unknown') {
-		return rejected(unreadableReason(container), capabilities);
+		const u = unreadable(container);
+		return rejected(u.code, u.reason, capabilities, u.remedy);
 	}
 
 	const parsed = await parseMoov(file);
-	if (!parsed) return rejected(unreadableReason(container), capabilities);
+	if (!parsed) {
+		const u = unreadable(container);
+		return rejected(u.code, u.reason, capabilities, u.remedy);
+	}
 
 	const { iso, info } = parsed;
 	const brands = info.brands ?? [];
+
+	if (info.isFragmented) {
+		const result = rejected(FRAGMENTED.code, FRAGMENTED.reason, capabilities, FRAGMENTED.remedy);
+		return { ...result, brands };
+	}
 
 	// The first of each. PLAN.md 4.5 has one video and one audio representation;
 	// alternate language or commentary tracks are not in scope and picking the
@@ -719,6 +770,7 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 
 	if (!video && !audio) {
 		const result = rejected(
+			'empty',
 			'This file has no video and no audio track, only metadata, so there is nothing to play.',
 			capabilities
 		);
@@ -728,6 +780,7 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 	const checker = playbackChecker();
 	if (!checker) {
 		const result = rejected(
+			'browser',
 			'This browser has neither MediaSource nor ManagedMediaSource, so it cannot play a segmented stream at all, whatever the file contains. Hosting needs a current desktop browser.',
 			capabilities
 		);
@@ -756,9 +809,14 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 
 	let tier: Tier;
 	let reason: string;
+	let code: FaultCode = 'unknown';
 	if (blockers.length > 0) {
 		tier = 'reject';
 		reason = blockers.join(' ');
+		// A codec nobody here can decode is the common case; keyframes are the
+		// rarer and more specific one, and a file that is wrong both ways is
+		// told both truths but coded by the one it must fix first.
+		code = video && video.maxRapGapSec > MAX_RAP_GAP_SEC ? 'keyframes' : 'codec';
 	} else if (videoVerdict.action === 'transcode' || audioVerdict.action === 'transcode') {
 		tier = 'transcode';
 		const clauses: string[] = [];
@@ -773,6 +831,7 @@ export async function probeFile(file: File): Promise<ProbeResult> {
 	return {
 		tier,
 		reason,
+		code,
 		video,
 		audio,
 		videoAction: videoVerdict.action,

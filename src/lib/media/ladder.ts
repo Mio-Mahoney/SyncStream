@@ -66,6 +66,15 @@ export type Ladder = {
 	getSegment(repId: number, track: Track, segIdx: number): Promise<Uint8Array>;
 	/** This segment is wanted soon. Pre-generates ahead of the playhead. */
 	note(repId: number, track: Track, segIdx: number): void;
+	/**
+	 * One `getSegment` caller no longer wants its answer. A job nobody is
+	 * waiting on that has not started yet is dropped from the queue, so a
+	 * guest's seek away (or departure) does not leave the encoder spending the
+	 * host's CPU on segments nobody will play. A job the host's own player or
+	 * another guest still wants, or one already on a worker, is untouched; the
+	 * warm-up and lookahead jobs were never anybody's demand and stay queued.
+	 */
+	release(repId: number, track: Track, segIdx: number): void;
 	close(): void;
 };
 
@@ -100,6 +109,12 @@ type Job = {
 	track: Track;
 	segIdx: number;
 	priority: number;
+	/** `getSegment` callers awaiting this. Zero for warm-up and lookahead. */
+	waiters: number;
+	/** Queued by warm-up or lookahead, so it stays even with nobody waiting. */
+	speculative: boolean;
+	/** Handed to a worker. Past this point a release cannot stop it. */
+	running: boolean;
 	promise: Promise<Uint8Array>;
 	resolve: (bytes: Uint8Array) => void;
 	reject: (err: Error) => void;
@@ -274,11 +289,13 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 		const hit = cacheGet(key);
 		if (hit) return Promise.resolve(hit);
 
+		const demanded = priority === PRIORITY_DEMAND;
 		const existing = pending.get(key);
 		if (existing) {
 			// A segment somebody is now waiting on outranks the same segment queued
 			// as a guess about the future.
 			existing.priority = Math.min(existing.priority, priority);
+			if (demanded) existing.waiters++;
 			return existing.promise;
 		}
 
@@ -288,7 +305,19 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 			resolve = res;
 			reject = rej;
 		});
-		const job: Job = { key, repId, track, segIdx, priority, promise, resolve, reject };
+		const job: Job = {
+			key,
+			repId,
+			track,
+			segIdx,
+			priority,
+			waiters: demanded ? 1 : 0,
+			speculative: !demanded,
+			running: false,
+			promise,
+			resolve,
+			reject
+		};
 		pending.set(key, job);
 		queue.push(job);
 		pump();
@@ -309,7 +338,19 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 		}
 	}
 
+	function release(rep: number, track: Track, segIdx: number): void {
+		const job = pending.get(segKey(repOf(rep, track), track, segIdx));
+		if (!job || job.running) return;
+		job.waiters = Math.max(0, job.waiters - 1);
+		if (job.waiters > 0 || job.speculative) return;
+		pending.delete(job.key);
+		const at = queue.indexOf(job);
+		if (at !== -1) queue.splice(at, 1);
+		job.reject(new DOMException('segment no longer wanted', 'AbortError'));
+	}
+
 	async function execute(job: Job, slot: Slot): Promise<void> {
+		job.running = true;
 		try {
 			const bytes = await encode(job, slot);
 			cachePut(job.key, bytes);
@@ -606,6 +647,7 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 		getInit,
 		getSegment,
 		note,
+		release,
 		close
 	};
 }

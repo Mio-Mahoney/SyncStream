@@ -1,7 +1,15 @@
-import { existsSync } from 'node:fs';
-import { statSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
-import { fixture, openGuest, openHost, snapshot, until, videoTime } from './helpers';
+import {
+	fixture,
+	landedSeek,
+	openGuest,
+	openHost,
+	peakRss,
+	snapshot,
+	until,
+	videoTime
+} from './helpers';
 
 /**
  * PLAN.md Phase 2's acceptance criterion, at its stated scale.
@@ -18,10 +26,19 @@ import { fixture, openGuest, openHost, snapshot, until, videoTime } from './help
  */
 const large = fixture('large-2gb.mp4');
 
+/** One line per run, appended to a file the measurement script collects. */
+function testInfoLog(line: string): void {
+	const out = process.env.SCALE_LOG;
+	if (!out) return;
+	appendFileSync(out, `${new Date().toISOString()} ${line}\n`);
+}
+
 /**
- * usedJSHeapSize rather than process RSS: the plan's concern is "both sides
- * holding gigabytes of JS heap", and that is exactly what this measures.
- * Chromium only exposes it, so this is Chromium-only by construction.
+ * The JS heap, kept beside the process figure because it is what the old
+ * build blew up (gigabytes of file in heap), and because the two disagreeing
+ * is itself information: media bytes live in ArrayBuffer backing stores and
+ * workers, which the heap number does not count (REVIEW T-03). The
+ * acceptance assertion is on the process.
  */
 const heapMb = (page: Page) =>
 	page.evaluate(() => {
@@ -38,11 +55,15 @@ test.describe(() => {
 
 	test('a multi-GB local file streams with a fast first frame and bounded memory', async ({
 		page,
-		context
+		browser
 	}) => {
 		const sizeGb = statSync(large).size / 1024 ** 3;
-		const { code } = await openHost(page, 'large-2gb.mp4');
-		const { page: guest } = await openGuest(context, code);
+		// Separate contexts, as PLAN.md 11 states the measurement: Chromium gives
+		// each its own renderer, so the memory of each side is read on its own.
+		const guestContext = await browser.newContext();
+		const rss = peakRss(browser);
+		const { code, secret } = await openHost(page, 'large-2gb.mp4');
+		const { page: guest } = await openGuest(guestContext, { code, secret });
 
 		const first = await until(
 			() => snapshot(guest),
@@ -61,35 +82,57 @@ test.describe(() => {
 			{ what: 'playback to advance' }
 		);
 
-		// Seek far into a file that was never uploaded anywhere.
+		// Seek far into a file that was never uploaded anywhere. Landed, not
+		// assigned: the frame is on screen when the clock stops.
 		const target = 900;
-		const seekStart = Date.now();
-		await guest.getByTestId('seek').fill(String(target));
-		await guest.getByTestId('seek').dispatchEvent('change');
+		const seekMs = await landedSeek(guest, target);
+
+		// Play through the seek for a while, so the memory peak includes a
+		// working buffer on both sides rather than the first few segments.
 		await until(
 			() => videoTime(guest),
-			(t) => t > target - 2 && t < target + 30,
-			{
-				what: 'a seek deep into the file to resolve',
-				timeout: 30_000
-			}
+			(t) => t > target + 20,
+			{ what: 'twenty seconds of playback past the seek', timeout: 60_000 }
 		);
-		const seekMs = Date.now() - seekStart;
+		const stalls = (await snapshot(guest)).stalls;
+		const hostTimings = (await snapshot(page)).timings;
+		const guestTimings = first.timings;
 
 		const hostHeap = await heapMb(page);
 		const guestHeap = await heapMb(guest);
+		const peakRendererMb = await rss.stop();
 
+		const line = (k: string, v: string) => `  ${k.padEnd(22)}: ${v}`;
 		console.log(
-			`\nPLAN.md 11 measurements (fixture ${sizeGb.toFixed(2)} GB):\n` +
-				`  time to first frame : ${first.ttff!.toFixed(0)} ms\n` +
-				`  seek to ${target}s        : ${seekMs} ms\n` +
-				`  host JS heap        : ${hostHeap.toFixed(0)} MB\n` +
-				`  guest JS heap       : ${guestHeap.toFixed(0)} MB\n`
+			[
+				`\nPLAN.md 11 measurements (fixture ${sizeGb.toFixed(2)} GB):`,
+				line('time to first frame', `${first.ttff!.toFixed(0)} ms (painted frame)`),
+				line(`seek to ${target}s (landed)`, `${seekMs} ms`),
+				line('peak renderer RSS', `${peakRendererMb.toFixed(0)} MB (largest of host, guest)`),
+				line('host JS heap', `${hostHeap.toFixed(0)} MB`),
+				line('guest JS heap', `${guestHeap.toFixed(0)} MB`),
+				line('guest stalls', String(stalls)),
+				line(
+					'host probe / origin',
+					`${hostTimings.probeMs ?? '-'} / ${hostTimings.originMs ?? '-'} ms`
+				),
+				line(
+					'guest queue / load',
+					`${guestTimings.readyToLoadMs ?? '-'} / ${guestTimings.loadMs ?? '-'} ms`
+				),
+				''
+			].join('\n')
+		);
+		testInfoLog(
+			`ttff=${first.ttff!.toFixed(0)} seek=${seekMs} rss=${peakRendererMb.toFixed(0)} hostHeap=${hostHeap.toFixed(0)} guestHeap=${guestHeap.toFixed(0)} stalls=${stalls} probe=${hostTimings.probeMs ?? 0} origin=${hostTimings.originMs ?? 0} queue=${guestTimings.readyToLoadMs ?? 0} load=${guestTimings.loadMs ?? 0}`
 		);
 
-		// The old build held the entire file on both sides. Nothing here may.
+		// PLAN.md Phase 2's criterion, each clause measured as it is stated.
+		expect(seekMs, 'a landed seek deep into the file').toBeLessThan(2000);
+		expect(peakRendererMb, 'peak process memory on the heavier side').toBeLessThan(500);
 		expect(hostHeap, 'host JS heap must not scale with file size').toBeLessThan(500);
 		expect(guestHeap, 'guest JS heap must not scale with file size').toBeLessThan(500);
-		expect(seekMs, 'seek latency').toBeLessThan(10_000);
+		expect(stalls, 'playback past the seek must not stall').toBe(0);
+		await guestContext.close();
 	});
 });

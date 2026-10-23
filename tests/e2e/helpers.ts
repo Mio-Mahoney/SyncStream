@@ -1,8 +1,38 @@
-import { expect, type BrowserContext, type Page, type TestInfo } from '@playwright/test';
+import {
+	expect,
+	type Browser,
+	type BrowserContext,
+	type Page,
+	type TestInfo
+} from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { appPath } from './base';
 import type { StrategyName } from '../../src/lib/rendezvous/transport';
+import {
+	CODE_ALPHABET,
+	CODE_LENGTH,
+	SECRET_LENGTH,
+	roomFromLink,
+	roomHash,
+	type RoomRef
+} from '../../src/lib/rendezvous/codes';
+
+/** A room nobody has opened: a fresh code and a fresh key, both in the room alphabet. */
+export function freshRoom(): RoomRef {
+	const draw = (n: number) =>
+		Array.from({ length: n }, () => CODE_ALPHABET[Math.floor(Math.random() * 32)]).join('');
+	return { code: draw(CODE_LENGTH), secret: draw(SECRET_LENGTH) };
+}
+
+/** The URL a guest opens for `room`, under the suite's base path, on the given strategy. */
+export const guestPath = (room: RoomRef, opts?: StrategyOptions, query = 'debug=1') =>
+	appPath(`/room/${room.code}?${query}&${strategyParam(opts)}${roomHash(room.secret)}`);
+
+/** The URL a host opens for `room`. */
+export const hostPath = (room: RoomRef, opts?: StrategyOptions, query = 'debug=1') =>
+	appPath(`/room/${room.code}?create=1&${query}&${strategyParam(opts)}${roomHash(room.secret)}`);
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const fixture = (name: string) => join(here, '..', 'fixtures', name);
@@ -48,8 +78,12 @@ export type Snapshot = {
 		bufferedAhead: number;
 		atEnd: boolean;
 		rung: number | null;
+		candidateType: string;
+		cannotPlay: boolean;
 	}[];
 	ttff: number | null;
+	stalls: number;
+	timings: Record<string, number>;
 	mesh: {
 		cacheBytes: number;
 		cacheKeys: number;
@@ -117,6 +151,84 @@ export const videoTime = (page: Page) =>
 		return v ? v.currentTime : -1;
 	});
 
+/**
+ * Seeks through the room's own control and measures a LANDED seek: the
+ * element no longer seeking, with a decodable frame at the target. This is
+ * what PLAN.md Phase 2's "seek resolves under 2s" means. The old measurement
+ * stopped the clock when `currentTime` entered a window, which is the
+ * assignment itself - PLAN.md 11's "43ms" was an intent round trip, not a
+ * frame on screen (REVIEW T-01).
+ */
+export async function landedSeek(page: Page, target: number, timeout = 30_000): Promise<number> {
+	const started = Date.now();
+	await page.getByTestId('seek').fill(String(target));
+	await page.getByTestId('seek').dispatchEvent('change');
+	await until(
+		() =>
+			page.evaluate(() => {
+				const v = document.querySelector('video') as HTMLVideoElement;
+				return { time: v.currentTime, seeking: v.seeking, readyState: v.readyState };
+			}),
+		(v) => !v.seeking && v.readyState >= 2 && Math.abs(v.time - target) < 2,
+		{ what: `a landed seek to ${target}s`, timeout }
+	);
+	return Date.now() - started;
+}
+
+/**
+ * Resident set size, in MB, of every renderer process of the test browser, as
+ * the OS reports it. The JS heap alone is blind to ArrayBuffer backing stores
+ * and workers, which is where the media bytes live (REVIEW T-03), so PLAN.md's
+ * "peak RSS under 500MB on both sides" is read off `ps`. The renderer pids
+ * come from the browser itself over CDP, so another Chromium on the machine
+ * cannot be mistaken for ours. Host and guest are in separate browser
+ * contexts, which Chromium keeps in separate renderers, so the largest single
+ * renderer is the heavier side.
+ */
+export async function rendererRssMb(browser: Browser): Promise<number[]> {
+	const cdp = await browser.newBrowserCDPSession();
+	try {
+		const { processInfo } = (await cdp.send('SystemInfo.getProcessInfo')) as {
+			processInfo: { type: string; id: number }[];
+		};
+		const pids = processInfo.filter((p) => p.type === 'renderer').map((p) => p.id);
+		if (pids.length === 0) return [];
+		const out = execFileSync('ps', ['-o', 'rss=', '-p', pids.join(',')], { encoding: 'utf8' });
+		return out
+			.split('\n')
+			.map((l) => Number(l.trim()))
+			.filter((kb) => Number.isFinite(kb) && kb > 0)
+			.map((kb) => kb / 1024);
+	} finally {
+		await cdp.detach().catch(() => {});
+	}
+}
+
+/** Samples renderer RSS on an interval and keeps the peak, until stopped. */
+export function peakRss(browser: Browser, intervalMs = 500) {
+	let peak = 0;
+	let stopped = false;
+	const sample = async () => {
+		for (const mb of await rendererRssMb(browser).catch(() => [] as number[])) {
+			peak = Math.max(peak, mb);
+		}
+	};
+	const loop = (async () => {
+		while (!stopped) {
+			await sample();
+			await new Promise((r) => setTimeout(r, intervalMs));
+		}
+	})();
+	return {
+		async stop(): Promise<number> {
+			stopped = true;
+			await loop;
+			await sample();
+			return peak;
+		}
+	};
+}
+
 /** Keep EOF evidence together because file and MSE durations can differ slightly. */
 export const videoEndState = (page: Page) =>
 	page.evaluate(() => {
@@ -175,7 +287,13 @@ export async function expectFilmEnd(
 	await expect(guest.getByTestId('waiting')).toBeHidden();
 }
 
-/** Opens a room as host and stops at the picker, with no file chosen yet. */
+/**
+ * Opens a room as host and stops at the picker, with no file chosen yet.
+ *
+ * Returns the room as a guest needs it: the code and the key, read off the
+ * invite link the panel shows - which is the one string the product exists to
+ * produce, and the only place the key is ever written down.
+ */
 export async function openRoom(page: Page, opts?: StrategyOptions) {
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
@@ -190,7 +308,11 @@ export async function openRoom(page: Page, opts?: StrategyOptions) {
 	// code before that risks reading one a collision is about to replace.
 	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
 	const code = (await page.getByTestId('room-code').textContent())!.trim();
-	return { code, errors };
+	const link = await page.getByTestId('invite-link').inputValue();
+	const room = roomFromLink(link);
+	if (!room) throw new Error(`the invite panel shows a link with no room in it: ${link}`);
+	if (room.code !== code) throw new Error(`invite link names ${room.code}, header says ${code}`);
+	return { code, secret: room.secret, link, errors };
 }
 
 /** Opens a room as host and picks a fixture. */
@@ -223,14 +345,14 @@ export async function dropFile(page: Page, file: { name: string; type: string; b
  */
 export async function openGuest(
 	ctx: BrowserContext,
-	code: string,
+	room: RoomRef,
 	opts?: StrategyOptions,
 	into?: Page
 ) {
 	const page = into ?? (await ctx.newPage());
 	const errors: string[] = [];
 	page.on('pageerror', (e) => errors.push(e.message));
-	await page.goto(appPath(`/room/${code}?debug=1&${strategyParam(opts)}`));
+	await page.goto(guestPath(room, opts));
 	return { page, errors };
 }
 

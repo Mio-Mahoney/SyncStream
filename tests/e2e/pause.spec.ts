@@ -31,9 +31,9 @@ async function stopWatchingBuffers(host: Page) {
 
 /** Everyone is named, the film is on, and it has genuinely started for the guest. */
 async function watchingTogether(page: Page, ctx: Parameters<typeof openGuest>[0]) {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 	await nameYourself(page, 'host-name', 'Alice');
-	const { page: g } = await openGuest(ctx, code);
+	const { page: g } = await openGuest(ctx, { code, secret });
 	await expect(g.getByTestId('video')).toBeVisible({ timeout: 45_000 });
 	await nameYourself(g, 'guest-name', 'Bob');
 	await stopWatchingBuffers(page);
@@ -46,7 +46,7 @@ async function watchingTogether(page: Page, ctx: Parameters<typeof openGuest>[0]
 			what: 'the film to be running for the guest'
 		}
 	);
-	return { code, guest: g };
+	return { code, secret, guest: g };
 }
 
 test('a guest who pauses the film is named to everyone but themselves', async ({
@@ -100,7 +100,7 @@ test('the host pausing is named to the guests, and clears when the film runs aga
 });
 
 test('a guest arriving at a stopped film is told why it is stopped', async ({ page, context }) => {
-	const { code } = await watchingTogether(page, context);
+	const { code, secret } = await watchingTogether(page, context);
 
 	await page.getByTestId('play').click();
 	await until(
@@ -111,7 +111,7 @@ test('a guest arriving at a stopped film is told why it is stopped', async ({ pa
 
 	// Nobody watched this one stop, which is exactly why they need telling: a film
 	// that is simply motionless on arrival is indistinguishable from a broken one.
-	const { page: late } = await openGuest(context, code);
+	const { page: late } = await openGuest(context, { code, secret });
 	await expect(late.getByTestId('video')).toBeVisible({ timeout: 45_000 });
 	await expect(late.getByTestId('paused-by')).toHaveText('Alice paused the film.');
 });

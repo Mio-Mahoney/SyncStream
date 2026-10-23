@@ -15,13 +15,13 @@ const nowPlaying = (p: Page, testid: string) =>
 	);
 
 test('the room says what it is watching, to both ends of it', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 
 	// Deliberately after the host has picked. The title rides on `ready`, which a
 	// latecomer only gets in reply to its hello - so a title captured when the
 	// file was chosen, rather than read at send time, would leave every guest who
 	// arrives once the film is on watching an unnamed one. That is most guests.
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(x) => x.ttff !== null,
@@ -48,8 +48,8 @@ test('the room says what it is watching, to both ends of it', async ({ page, con
 });
 
 test('a second film renames the room, on both ends', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(x) => x.ttff !== null,

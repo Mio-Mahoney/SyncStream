@@ -19,8 +19,8 @@ test('a host who reloads gets their guests back, following the new page at once'
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,

@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { CODE_LENGTH } from '$lib/rendezvous/codes';
+	import type { Phase } from '$lib/room/phase';
+	import type { UnreachableCause } from '$lib/rendezvous/room';
+	import type { Fault } from '$lib/protocol/control';
+	import FaultNotice from '$lib/FaultNotice.svelte';
 	import NameTag from '$lib/NameTag.svelte';
 	import Presence from '$lib/Presence.svelte';
 
@@ -8,40 +12,13 @@
 	 * The screen for a room with no video on it - mostly a guest's, and every
 	 * dead end either end can reach.
 	 *
-	 * The waits below are indistinguishable from the outside - all of them are
+	 * The waits are indistinguishable from the outside - all of them are
 	 * "nothing is happening yet" - but they call for completely different
-	 * actions: keep waiting, go get the right code, or leave. Naming which one
-	 * you are in is the whole job of this screen.
-	 *
-	 * `invalid` is the odd one out among the waits: nothing was ever attempted,
-	 * because the code in the URL could not name a room. It still belongs here
-	 * rather than in an error banner, since to the person holding a broken link
-	 * it is the same situation as `failed` - the film is not going to play, now
-	 * what?
-	 *
-	 * `opening` and `unopened` are the host's alone, and they are one wait and
-	 * its failure: the announce going out, and the announce never landing.
-	 * `unopened` is also the same rendezvous failure as `failed` read from the
-	 * other end - the guest found no room to join, the host opened none - and it
-	 * lands here for the reason `invalid` does: it is a dead end, and this is the
-	 * screen that knows how to end one.
-	 *
-	 * `unreachable` is `failed`'s near twin and its opposite: the search found
-	 * the room, and the connection to it would not open. From the outside the
-	 * two are the same blank wait, and they used to be the same screen - which
-	 * told a guest whose host was sitting right there to go and check the code.
+	 * actions: keep waiting, go get the right link, or leave. Naming which one
+	 * you are in is the whole job of this screen. Which one that is, and the
+	 * order they outrank each other in, is `roomPhase` in room/phase.ts; the
+	 * sentences for each are here.
 	 */
-	export type Phase =
-		| 'searching'
-		| 'found'
-		| 'failed'
-		| 'unreachable'
-		| 'ended'
-		| 'invalid'
-		| 'insecure'
-		| 'rejected'
-		| 'opening'
-		| 'unopened';
 
 	let {
 		phase,
@@ -51,8 +28,10 @@
 		hostName = '',
 		/** Per-strategy diagnostics from a RendezvousError: `failed`, `unreachable` or `unopened`. */
 		attempts = [] as readonly string[],
+		/** What `unreachable` actually observed, which decides what to advise. */
+		cause = 'timeout' as UnreachableCause,
 		/** The host's probe verdict, for a `rejected` phase. */
-		reason = '',
+		reason = null as Fault | null,
 		others = [] as readonly string[],
 		onRetry,
 		name = '',
@@ -63,7 +42,8 @@
 		address?: string;
 		hostName?: string;
 		attempts?: readonly string[];
-		reason?: string;
+		cause?: UnreachableCause;
+		reason?: Fault | null;
 		/**
 		 * The other guests waiting alongside the reader, by name - the host and the
 		 * reader both excluded. Only the host can say (see `Roster` in
@@ -110,7 +90,7 @@
 	data-testid="waiting-room"
 	data-phase={phase}
 >
-	{#if phase === 'searching' || phase === 'found' || phase === 'rejected' || phase === 'opening'}
+	{#if phase === 'searching' || phase === 'found' || phase === 'rejected' || phase === 'opening' || phase === 'hostless'}
 		<!--
 			The spinner is the only thing on this screen that distinguishes "working
 			on it" from "hung". Rendezvous walks a ladder of public relays at ten
@@ -188,22 +168,60 @@
 	{:else if phase === 'unreachable'}
 		<!--
 			The room answered, so everything `failed` advises is wrong here: the
-			code is right and the host is there. What did not happen is a direct
-			connection between two networks, which is the one thing this app has no
-			server to fall back on (it would have to carry the whole film).
+			code is right and someone is there. What did not happen is a connection,
+			and `cause` is how much is actually known about why (see
+			UnreachableCause). An observed ICE failure is two networks that will not
+			let a direct connection through - the one thing this app has no server
+			to fall back on, since it would have to carry the whole film. A deadline
+			that ran out is usually the same, but is also what a host who closed the
+			page a moment after answering looks like, so it is said with the
+			hedge it deserves rather than sending someone to switch networks.
 
 			Said about the two networks rather than about the reader's: either end
 			can be the one behind the strict NAT, and nothing here can tell which.
-			Both exits are named because both are real - a different network at
-			either end usually does it, and a retry sometimes does on its own.
 		-->
 		<h2 class="text-lg font-medium" data-testid="waiting-title">
 			Couldn't connect to room {code}
 		</h2>
+		{#if cause === 'ice-failed'}
+			<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800" data-cause={cause}>
+				The room is open and someone in it answered, but your two networks wouldn't let a direct
+				connection through. A VPN, a phone hotspot, or an office or campus network is usually why.
+				Switching networks at either end often fixes it.
+			</p>
+		{:else}
+			<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800" data-cause={cause}>
+				The room is open and someone in it answered, but the connection never finished opening. That
+				is usually two networks that won't let a direct connection through (a VPN, a hotspot, an
+				office network), and sometimes a host who closed the page a moment ago. Try again; if it
+				keeps happening, switching networks at either end often fixes it.
+			</p>
+		{/if}
+	{:else if phase === 'hostless'}
+		<!--
+			Found people, found no host. Still searching - the spinner stays, since a
+			host reopening their link is met within seconds - but the wait is named,
+			because "Looking for room X" over a room that has already answered was a
+			spinner with no end and no account of itself.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">No host in room {code}</h2>
 		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
-			The room is open and its host answered, but your two networks wouldn't let a direct connection
-			through. A VPN, a phone hotspot, or an office or campus network is usually why. Switching
-			networks at either end often fixes it.
+			Someone is in this room, but the host isn't. A room only plays while its host has the page
+			open, so they may have closed it. Ask them to open their invite link again - you'll connect as
+			soon as they do.
+		</p>
+	{:else if phase === 'nokey'}
+		<!--
+			The sibling of `invalid`. The code names a room, but the link has lost
+			the key that opens it, so nothing is attempted: without the key no
+			connection can be made, and a search would end in `failed` and send the
+			reader to check a code that is right.
+		-->
+		<h2 class="text-lg font-medium" data-testid="waiting-title">That link is missing its key</h2>
+		<p class="mx-auto mt-2 max-w-[20rem] text-sm text-moonstone-800">
+			An invite link ends in a key (the part after <code>#</code>), and this one doesn't, so the
+			room can't let you in. Links sometimes lose their ending when pasted. Ask the host to copy the
+			link again and send the whole thing.
 		</p>
 	{:else if phase === 'unopened'}
 		<!--
@@ -275,7 +293,7 @@
 		</div>
 	{/if}
 
-	{#if phase === 'failed' || phase === 'unreachable' || phase === 'ended' || phase === 'invalid' || phase === 'unopened'}
+	{#if phase === 'failed' || phase === 'unreachable' || phase === 'hostless' || phase === 'ended' || phase === 'invalid' || phase === 'nokey' || phase === 'unopened'}
 		<!--
 			Every dead end used to be a line of text and nothing else: the only way
 			out was editing the URL. `failed` gets a retry because a host who is
@@ -285,7 +303,7 @@
 			cannot start working, so the button would be a lie.
 		-->
 		<div class="mt-6 flex justify-center gap-3">
-			{#if phase === 'failed' || phase === 'unreachable' || phase === 'unopened'}
+			{#if phase === 'failed' || phase === 'unreachable' || phase === 'hostless' || phase === 'unopened'}
 				<button
 					onclick={onRetry}
 					class="rounded border border-tangerine-600 bg-tangerine-400 px-4 py-2 transition hover:bg-tangerine-500 active:bg-tangerine-600"
@@ -317,9 +335,9 @@
 				of a guest it names the wrong machine.
 			-->
 			<p class="mt-2 text-xs text-moonstone-700">What the host's browser found in the file:</p>
-			<p class="mt-1 text-xs break-words text-moonstone-700" data-testid="reject-reason">
-				{reason}
-			</p>
+			<div class="mt-1 text-xs break-words">
+				<FaultNotice fault={reason} tone="note" testid="reject-reason" />
+			</div>
 		</details>
 	{/if}
 

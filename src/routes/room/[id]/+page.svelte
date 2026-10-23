@@ -13,9 +13,12 @@
 	import NowPlaying from '$lib/NowPlaying.svelte';
 	import PausedNotice from '$lib/PausedNotice.svelte';
 	import Presence from '$lib/Presence.svelte';
-	import WaitingRoom, { type Phase } from '$lib/WaitingRoom.svelte';
+	import WaitingRoom from '$lib/WaitingRoom.svelte';
+	import { roomPhase } from '$lib/room/phase';
+	import FaultNotice from '$lib/FaultNotice.svelte';
 	import { fallbackName, readName, saveName } from '$lib/identity';
 	import { tierMessage } from '$lib/media/probe';
+	import { FaultError, faultOf, type Fault } from '$lib/protocol/control';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
 	import { startHostRoom, type HostRoom } from '$lib/room/host';
 	import { startGuestRoom, type GuestRoom } from '$lib/room/guest';
@@ -25,7 +28,12 @@
 		UnreachableError,
 		strategyFromParams
 	} from '$lib/rendezvous/room';
-	import { isValidRoomCode } from '$lib/rendezvous/codes';
+	import {
+		generateRoomSecret,
+		isValidRoomCode,
+		roomHash,
+		secretFromHash
+	} from '$lib/rendezvous/codes';
 
 	// Reactive because the control bar takes it as a prop: bind:this only assigns
 	// after the first render, so a plain `let` would hand the bar a permanent
@@ -59,7 +67,26 @@
 	let opened = $state(false);
 
 	let error = $state('');
-	let unplayable = $state('');
+	/** The last file this host offered that will not play, or null. */
+	let unplayable = $state<Fault | null>(null);
+	/**
+	 * A second film the host tried to put on and could not, while the first
+	 * stays on. Both roles hold it: the host's picker shows the fault itself,
+	 * and this is the note beside the film for everyone that the switch did
+	 * not happen - which, for a guest, is the only account they get.
+	 */
+	let switchFailed = $state<{ title: string; fault: Fault } | null>(null);
+	/**
+	 * Guests whose browser refused the film, by peer, with what it said. Host
+	 * only: a guest's own refusal is in `error` on their screen. Each entry is
+	 * why one friend is not watching, and the barrier has already let go of them.
+	 */
+	let cannotPlay = $state<{ peerId: string; name: string; fault: Fault }[]>([]);
+	/**
+	 * Rendezvous found people in the room and none of them is the host, for
+	 * long enough to say so. Cleared the moment a host says hello.
+	 */
+	let hostless = $state(false);
 	/**
 	 * The film playing right now is not being played off disk - it is being
 	 * converted as it streams (PLAN.md 4.3's tier 2). Host-only, and true for as
@@ -121,6 +148,13 @@
 	/** The URL's code could not name a room, so nothing was ever attempted. */
 	let badCode = $state(false);
 	/**
+	 * A guest's link named a room and carried no key for it (codes.ts), so
+	 * nothing was attempted: without the key no connection can form, and a
+	 * search would have ended in `failed` with advice to check a code that is
+	 * right. A host without one simply mints one - it is their room.
+	 */
+	let noKey = $state(false);
+	/**
 	 * The page is not a secure context, so nothing was attempted here either.
 	 *
 	 * Browsers hand out `crypto.subtle` (and WebCodecs) only on https and on
@@ -153,7 +187,9 @@
 	 * A guest's code needs no such gate: it was handed to them, it is the room
 	 * they are looking for either way, and nothing here can change it.
 	 */
-	const codeNamesARoom = $derived(!badCode && !insecure && !roomUnopened && (!isHost || opened));
+	const codeNamesARoom = $derived(
+		!badCode && !noKey && !insecure && !roomUnopened && (!isHost || opened)
+	);
 
 	let roomOver = $state(false);
 	/** A file is being probed. Picking a second one now would race the first. */
@@ -217,44 +253,29 @@
 	 * Mostly a guest's, who has no picker and no controls until the host sends a
 	 * video - without this the whole page is one line of grey text for them - but
 	 * the role-independent dead ends land here too, and so does the one the host
-	 * can reach before a room exists.
+	 * can reach before a room exists. The precedence lives in room/phase.ts.
 	 */
-	function phaseFor(): Phase | null {
-		// Ahead of the host check: a code that cannot name a room leaves nothing
-		// to host either, and whoever is holding the broken link needs the same
-		// way out regardless of which end of it they thought they were on.
-		if (badCode) return 'invalid';
-		// The same kind of dead end, for the same reason it sits up here: nothing
-		// was attempted, and which role the reader had in mind makes no difference.
-		if (insecure) return 'insecure';
-		// Also ahead of the host check. A failed announce left them the raw relay
-		// log under a header naming the room it had just failed to open, with no
-		// control on the page at all.
-		if (roomUnopened) return 'unopened';
-		// A hard error already has a banner that says more than a phase name could.
-		if (error) return null;
-		// The host's wait, and the counterpart of the guest's `searching` above it:
-		// both are rendezvous taking its time, and both are a blank page until it
-		// answers. The host's was one line of grey text with no spinner - the one
-		// thing that tells "working on it" apart from "hung" - under a room code
-		// that was not theirs to show yet. Their remaining waits are the invite
-		// panel's and the picker's to describe, and those are real controls.
-		if (isHost) return opened ? null : 'opening';
-		// The same ladder, ending two different ways: nobody was in the room, or
-		// somebody was and could not be connected to. Opposite advice follows.
-		if (rendezvousFailure) {
-			return rendezvousFailure instanceof UnreachableError ? 'unreachable' : 'failed';
-		}
-		// Outranks `ready`, since the host can also leave mid-film.
-		if (roomOver) return 'ended';
-		if (ready) return null;
-		// Below `ready` on purpose. A superseding file clears this anyway, but a
-		// rejection that outranked a playing video is exactly the bug this fixes,
-		// and the ordering makes it unreachable rather than merely unlikely.
-		if (unplayable) return 'rejected';
-		return hostName ? 'found' : 'searching';
-	}
-	const roomPhase = $derived(phaseFor());
+	const phase = $derived(
+		roomPhase({
+			isHost,
+			badCode,
+			insecure,
+			noKey,
+			opened,
+			error: error !== '',
+			rendezvous:
+				rendezvousFailure === null
+					? 'pending'
+					: rendezvousFailure instanceof UnreachableError
+						? 'unreachable'
+						: 'failed',
+			roomOver,
+			ready,
+			rejected: unplayable !== null,
+			hostFound: hostName !== '',
+			hostless
+		})
+	);
 
 	/**
 	 * A tab title is a room code's other public face - it is what a host reads
@@ -264,13 +285,15 @@
 	const title = $derived(
 		badCode
 			? 'Not a room'
-			: insecure
-				? 'Needs a secure address'
-				: roomUnopened
-					? "Couldn't open the room"
-					: codeNamesARoom
-						? `Room ${shownCode}`
-						: 'Opening your room'
+			: noKey
+				? 'Link is missing its key'
+				: insecure
+					? 'Needs a secure address'
+					: roomUnopened
+						? "Couldn't open the room"
+						: codeNamesARoom
+							? `Room ${shownCode}`
+							: 'Opening your room'
 	);
 
 	onMount(() => {
@@ -294,8 +317,25 @@
 			return;
 		}
 
+		// The key rides the fragment (codes.ts), which SvelteKit's `page.url`
+		// carries. A host without one has simply never had one minted - a
+		// bookmark from before keys, or a hand-typed URL - and it is their room
+		// to key: the address bar is corrected so a reload keeps the same key and
+		// the invite link they copy carries it. A guest without one has a link
+		// that was cut short, and nothing can be attempted for them.
+		let secret = secretFromHash(page.url.hash);
+		if (!secret) {
+			if (!isHost) {
+				noKey = true;
+				return;
+			}
+			// Minted here; written into the address bar once the room is open
+			// (see asHost), which is also when a collision's new code lands there.
+			secret = generateRoomSecret();
+		}
+
 		const ac = new AbortController();
-		(isHost ? asHost(ac.signal) : asGuest(ac.signal)).catch((e: Error) => {
+		(isHost ? asHost(ac.signal, secret) : asGuest(ac.signal, secret)).catch((e: Error) => {
 			// "room X was not reachable on any strategy tried (nostr: no host
 			// answered within 9813ms; ...)" is a true sentence that tells nobody
 			// anything they can act on. The waiting room says what it means and
@@ -317,12 +357,13 @@
 		};
 	});
 
-	async function asHost(signal: AbortSignal) {
+	async function asHost(signal: AbortSignal, secret: string) {
 		host = await startHostRoom({
 			video,
 			name,
 			origin: page.url.origin,
 			code,
+			secret,
 			// The same `?s=` a guest reads, honoured for the host too: it is how
 			// the e2e suite pins a room to the localhost relay (PLAN.md 4.6's
 			// escape hatch), and on the public strategies it merely reorders the
@@ -342,7 +383,16 @@
 				started = false;
 			},
 			onError: (e) => (error = e.message),
-			onGuests: (g) => (guests = g),
+			onSwitchFailed: (title, fault) => (switchFailed = { title, fault }),
+			onCannotPlay: (guest, fault) => {
+				const rest = cannotPlay.filter((c) => c.peerId !== guest.peerId);
+				cannotPlay = fault ? [...rest, { ...guest, fault }] : rest;
+			},
+			onGuests: (g) => {
+				guests = g;
+				// A guest who left takes their note with them.
+				cannotPlay = cannotPlay.filter((c) => g.some((x) => x.peerId === c.peerId));
+			},
 			// A host is never one of the guests the barrier waits on.
 			onWaiting: (on) => {
 				waitingOn = on;
@@ -356,25 +406,27 @@
 		hostedCode = host.code;
 		shareUrl = host.shareUrl;
 		opened = true;
-		if (host.code !== code) {
-			// A collision was resolved by regenerating. Keep the address bar
-			// honest so a reload re-hosts the room that actually exists -- on the
-			// same strategy, which the reload can only learn from the URL.
+		if (host.code !== code || secretFromHash(page.url.hash) !== secret) {
+			// A collision was resolved by regenerating, or the key was minted
+			// just now. Keep the address bar honest so a reload re-hosts the room
+			// that actually exists, under the same key -- on the same strategy,
+			// which the reload can only learn from the URL.
 			const path = resolve('/room/[id]', { id: host.code });
 			const strategy = strategyFromParams(page.url.searchParams);
 			const query = strategy ? `?create=1&${STRATEGY_PARAM}=${strategy}` : '?create=1';
 			// The path IS resolved. The rule only recognises a bare resolve() call
 			// and cannot see through appending a query string to one.
 			// eslint-disable-next-line svelte/no-navigation-without-resolve
-			replaceState(`${path}${query}`, {});
+			replaceState(`${path}${query}${roomHash(secret)}`, {});
 		}
 	}
 
-	async function asGuest(signal: AbortSignal) {
+	async function asGuest(signal: AbortSignal, secret: string) {
 		const nameOnEntry = name;
 		guest = await startGuestRoom({
 			video,
 			code,
+			secret,
 			name: nameOnEntry,
 			preferred: strategyFromParams(page.url.searchParams),
 			signal,
@@ -385,7 +437,9 @@
 				// first stops being true the moment this arrives. Nothing used to
 				// clear it, so a guest whose host retried watched the whole film under
 				// a red banner swearing the video could not be played.
-				unplayable = '';
+				unplayable = null;
+				// A film that did arrive retires the note about one that did not.
+				switchFailed = null;
 				ready = true;
 				// See the host's onSource: on a second film this is a reader who has
 				// watched nothing of it, whatever they watched of the first.
@@ -393,13 +447,16 @@
 			},
 			onHostName: (n) => {
 				hostName = n;
+				hostless = false;
 				// A host saying hello is a room that exists, whatever happened to the
 				// last one: a host who reloads comes back as a new page on the same
 				// code, and every guest who stayed is still here to meet it.
 				roomOver = false;
 			},
+			onNoHost: () => (hostless = true),
 			onCompany: (r) => (company = r),
-			onUnplayable: (reason) => (unplayable = reason),
+			onUnplayable: (fault) => (unplayable = fault),
+			onSwitchFailed: (title, fault) => (switchFailed = { title, fault }),
 			onWaiting: (on, you) => {
 				waitingOn = on;
 				waitingOnYou = you;
@@ -446,14 +503,19 @@
 	async function onFile(file: File) {
 		if (!host) return;
 		reading = true;
-		unplayable = '';
+		unplayable = null;
+		switchFailed = null;
 		try {
 			const probe = await host.setFile(file);
 			// Assigned either way: a second film that plays off disk has to retire
 			// the first one's note, not inherit it.
 			converting = probe.tier === 'direct' ? '' : tierMessage(probe, true);
+			cannotPlay = [];
 		} catch (err) {
-			unplayable = (err as Error).message;
+			// The engine has already told the room; this is the host's own copy,
+			// at the picker the file was dropped on. `onSwitchFailed` has set the
+			// note beside the film when there was one to keep.
+			unplayable = err instanceof FaultError ? err.fault : faultOf(err);
 		} finally {
 			reading = false;
 		}
@@ -526,7 +588,7 @@
 	 */
 	function toggleChanging() {
 		changing = !changing;
-		if (!changing) unplayable = '';
+		if (!changing) unplayable = null;
 	}
 
 	function toggleBarrier() {
@@ -648,19 +710,20 @@
 		<InvitePanel {shareUrl} {guests} {name} onRename={rename} />
 		<FilePicker
 			{onFile}
-			onReject={(reason) => (unplayable = reason)}
+			onReject={(fault) => (unplayable = fault)}
 			busy={reading}
 			rejected={unplayable}
 		/>
 	{/if}
 
-	{#if roomPhase}
+	{#if phase}
 		<WaitingRoom
-			phase={roomPhase}
+			{phase}
 			code={shownCode}
 			address={page.url.host}
 			{hostName}
 			attempts={rendezvousFailure?.attempts ?? []}
+			cause={rendezvousFailure instanceof UnreachableError ? rendezvousFailure.cause : 'timeout'}
 			reason={unplayable}
 			others={company.guests}
 			onRetry={retryRendezvous}
@@ -794,6 +857,40 @@
 			</div>
 		{/if}
 
+		<!--
+			The two notes a playing film can carry about something that did NOT
+			happen to it. Under the player and not over it: the film is fine and
+			still running, and a banner on the picture would say otherwise.
+
+			A failed switch is told to everyone - a guest who watched the host try
+			and fail otherwise sees nothing change and has no idea whether the host
+			knows. A guest who cannot play is the host's to read: the barrier has
+			already let go of them, and this is the only account anyone gets of why
+			one friend is not watching.
+		-->
+		{#if ready && switchFailed}
+			<div class="mt-3">
+				<FaultNotice
+					fault={switchFailed.fault}
+					lead="Couldn't switch to {switchFailed.title}. This video keeps playing."
+					tone="note"
+					testid="switch-failed"
+				/>
+			</div>
+		{/if}
+		{#if isHost && ready}
+			{#each cannotPlay as c (c.peerId)}
+				<div class="mt-3">
+					<FaultNotice
+						fault={c.fault}
+						lead="{c.name}'s browser can't play this video, so the room isn't waiting for them."
+						tone="note"
+						testid="cannot-play"
+					/>
+				</div>
+			{/each}
+		{/if}
+
 		{#if isHost && ready}
 			<HostBar
 				{shareUrl}
@@ -821,7 +918,7 @@
 		<div bind:this={changePicker} class="mt-6 flex w-full flex-col items-center">
 			<FilePicker
 				{onFile}
-				onReject={(reason) => (unplayable = reason)}
+				onReject={(fault) => (unplayable = fault)}
 				busy={reading}
 				rejected={unplayable}
 			/>

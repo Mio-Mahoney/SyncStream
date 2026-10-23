@@ -7,10 +7,13 @@
 	 * there is nothing else on this page a file could sensibly be dropped onto.
 	 */
 
+	import FaultNotice from '$lib/FaultNotice.svelte';
+	import type { Fault } from '$lib/protocol/control';
+
 	type Props = {
 		onFile: (file: File) => void;
 		/** Anything we can answer without touching the probe: folders, non-video, several at once. */
-		onReject: (reason: string) => void;
+		onReject: (fault: Fault) => void;
 		/** A file is being read. Picking a second one now would race the first. */
 		busy?: boolean;
 		/**
@@ -24,10 +27,12 @@
 		 * picker scrolled into view to be used at all, 282px above the top of the
 		 * viewport - so a host dropped a bad file and watched the screen not change.
 		 */
-		rejected?: string;
+		rejected?: Fault | null;
 	};
 
-	let { onFile, onReject, busy = false, rejected = '' }: Props = $props();
+	let { onFile, onReject, busy = false, rejected = null }: Props = $props();
+
+	const notVideo = (detail: string): Fault => ({ code: 'not-video', detail });
 
 	let dragging = $state(false);
 	let chosen = $state('');
@@ -92,12 +97,12 @@
 		// it from a video is to ask the entry rather than the file.
 		const entry = items?.[0]?.webkitGetAsEntry?.();
 		if (entry?.isDirectory) {
-			onReject(`"${entry.name}" is a folder. Drop the video file inside it instead.`);
+			onReject(notVideo(`"${entry.name}" is a folder. Drop the video file inside it instead.`));
 			return;
 		}
 		if (!files?.length) return;
 		if (files.length > 1) {
-			onReject('Drop one video at a time. A room plays a single file.');
+			onReject(notVideo('Drop one video at a time. A room plays a single file.'));
 			return;
 		}
 
@@ -106,7 +111,7 @@
 		// is not the same as knowing it is not a video: the probe reads the actual
 		// bytes and gives a far better answer than a guess from the name would.
 		if (file.type && !file.type.startsWith('video/')) {
-			onReject(`"${file.name}" is not a video file.`);
+			onReject(notVideo(`"${file.name}" is not a video file.`));
 			return;
 		}
 		chosen = file.name;
@@ -149,13 +154,9 @@
 		thing under it.
 	-->
 	{#if rejected}
-		<p
-			class="mb-3 rounded bg-tangerine-100 px-4 py-3 text-tangerine-900"
-			role="alert"
-			data-testid="unplayable"
-		>
-			{rejected}
-		</p>
+		<div class="mb-3">
+			<FaultNotice fault={rejected} testid="unplayable" />
+		</div>
 	{/if}
 
 	<!-- No lit state: while a file is over the page the overlay covers this entirely. -->

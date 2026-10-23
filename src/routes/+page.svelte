@@ -4,18 +4,27 @@
 	import { page } from '$app/state';
 	import {
 		generateRoomCode,
-		isValidRoomCode,
-		looksLikeLink,
-		normalizeRoomCode,
-		roomCodeFromLink,
-		CODE_LENGTH
+		generateRoomSecret,
+		linkLacksKey,
+		roomFromLink,
+		roomHash,
+		type RoomRef
 	} from '$lib/rendezvous/codes';
 	import { STRATEGY_PARAM, strategyFromParams } from '$lib/rendezvous/room';
 
-	let roomCode = $state('');
+	/** What was pasted, verbatim, so the reader can see and fix it. */
+	let link = $state('');
 	let error = $state('');
 
-	const canJoin = $derived(isValidRoomCode(roomCode));
+	/**
+	 * The room the pasted link names, or null. A link is the only way in: the
+	 * room's key (codes.ts) is sixteen characters nobody should be typing, and
+	 * the code alone has not opened a room since the key existed. So the box
+	 * takes a link and reads the room out of it, rather than taking a code and
+	 * mangling a pasted link into six valid-looking letters of one.
+	 */
+	const room = $derived<RoomRef | null>(roomFromLink(link));
+	const canJoin = $derived(room !== null);
 
 	/**
 	 * A valid `?s=` on this page rides along to the room, as `&s=...` or
@@ -32,15 +41,24 @@
 	}
 
 	function join() {
-		if (!canJoin) {
-			error = `Room codes are ${CODE_LENGTH} characters.`;
+		if (!room) {
+			error = describe(link);
 			return;
 		}
-		const path = resolve('/room/[id]', { id: roomCode });
+		const path = resolve('/room/[id]', { id: room.code });
 		// The path IS resolved. The rule only recognises a bare resolve() call and
 		// cannot see through appending a query string to one.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		goto(`${path}${strategyCarry(false)}`);
+		goto(`${path}${strategyCarry(false)}${roomHash(room.secret)}`);
+	}
+
+	/** Why a pasted string is not a link into a room, said so the reader can fix it. */
+	function describe(input: string): string {
+		if (!input.trim()) return 'Paste the invite link the host sent you.';
+		if (linkLacksKey(input)) {
+			return "That link has lost its key - the part after '#'. Ask the host to copy the whole link again.";
+		}
+		return 'That is not an invite link. Check you copied the whole thing.';
 	}
 
 	function createRoom() {
@@ -50,32 +68,22 @@
 		// query param rather than navigation state: a host who refreshes must
 		// still be the host, or the room dies under them.
 		const path = resolve('/room/[id]', { id: generateRoomCode() });
+		// The key is minted here with the code, so the host's very first URL
+		// carries it and a reload keeps it (codes.ts).
 		// The path IS resolved. The rule only recognises a bare resolve() call and
 		// cannot see through appending a query string to one.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
-		goto(`${path}?create=1${strategyCarry(true)}`);
+		goto(`${path}?create=1${strategyCarry(true)}${roomHash(generateRoomSecret())}`);
 	}
 
 	/**
-	 * What the host shares is a link, so a link is what lands in this box. Read
-	 * the code out of it rather than letting `normalizeRoomCode` shred the URL
-	 * into six alphabet characters that pass validation and lead nowhere.
+	 * Said as the reader types, not only on Join: a link that lost its ending
+	 * to a chat client looks complete, and the difference between "not a link"
+	 * and "a link missing its key" is the difference between re-copying and
+	 * asking the host for it.
 	 */
 	function onInput() {
-		error = '';
-		if (looksLikeLink(roomCode)) {
-			const fromLink = roomCodeFromLink(roomCode);
-			if (fromLink) {
-				roomCode = fromLink;
-				return;
-			}
-			// Better to say so than to silently keep the salvageable-looking
-			// letters and send them into an empty room.
-			roomCode = '';
-			error = 'That link has no room code in it. Check you copied the whole thing.';
-			return;
-		}
-		roomCode = normalizeRoomCode(roomCode);
+		error = link.trim() && !room ? describe(link) : '';
 	}
 </script>
 
@@ -118,21 +126,21 @@
 		</div>
 
 		<section class="rounded-xl border border-moonstone-200 bg-white/70 p-6">
-			<label for="room-code" class="block text-center text-sm text-moonstone-800">
-				Enter the code, or paste the invite link
+			<label for="invite-link" class="block text-center text-sm text-moonstone-800">
+				Paste the invite link
 			</label>
 			<input
-				id="room-code"
-				bind:value={roomCode}
+				id="invite-link"
+				bind:value={link}
 				oninput={onInput}
 				onkeydown={(e) => e.key === 'Enter' && join()}
-				placeholder={'·'.repeat(CODE_LENGTH)}
-				aria-label="Room code"
+				placeholder="https://…/room/K7M4PQ#k=…"
+				aria-label="Invite link"
 				aria-invalid={error ? 'true' : undefined}
-				autocapitalize="characters"
+				autocapitalize="off"
 				autocomplete="off"
 				spellcheck="false"
-				class="mt-3 h-[64px] w-full rounded border-2 border-slate-400 bg-white/75 text-center font-mono text-[32px] tracking-[0.3em] outline-none focus:border-moonstone-500 focus:bg-white focus:placeholder-transparent"
+				class="mt-3 h-[52px] w-full rounded border-2 border-slate-400 bg-white/75 px-3 text-center font-mono text-base outline-none focus:border-moonstone-500 focus:bg-white focus:placeholder-transparent"
 			/>
 			<!-- Belongs against the field it is about, not at the foot of the page. -->
 			{#if error}

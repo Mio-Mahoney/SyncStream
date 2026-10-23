@@ -1,5 +1,15 @@
 import { expect, test } from '@playwright/test';
-import { nameYourself, openGuest, openHost, openRoom, snapshot, until, videoTime } from './helpers';
+import {
+	freshRoom,
+	guestPath,
+	nameYourself,
+	openGuest,
+	openHost,
+	openRoom,
+	snapshot,
+	until,
+	videoTime
+} from './helpers';
 import { appPath } from './base';
 
 /**
@@ -15,7 +25,7 @@ test('a guest whose room has no host is told so, and given a way out', async ({ 
 	// saying so. Pinned to the localhost relay: the claim is about the failure
 	// screen, and a room with no host fails identically on any strategy -- the
 	// public ladder's own walk is rendezvous.spec.ts's job.
-	await page.goto(appPath('/room/K7M4PQ?s=local'));
+	await page.goto(guestPath(freshRoom()));
 
 	const waiting = page.getByTestId('waiting-room');
 	await expect(waiting).toHaveAttribute('data-phase', 'searching');
@@ -50,6 +60,37 @@ test('a link with a broken code says so, rather than searching for it', async ({
 	await expect(page).toHaveURL(/\/$/);
 });
 
+test('a link that lost its key says so, rather than searching for a room it cannot enter', async ({
+	page
+}) => {
+	// A chat client that trimmed the fragment. The code is right, and a search
+	// would have ended in "No one is hosting" - sending the guest to re-check a
+	// code that was never the problem - so nothing is attempted.
+	await page.goto(appPath('/room/K7M4PQ?s=local'));
+
+	const waiting = page.getByTestId('waiting-room');
+	await expect(waiting).toHaveAttribute('data-phase', 'nokey');
+	await expect(page.getByTestId('waiting-title')).toHaveText('That link is missing its key');
+	await expect(waiting).toContainText('Ask the host to copy the link again');
+	await expect(page.getByTestId('room-code')).toHaveCount(0);
+	await expect(page.getByTestId('retry')).toHaveCount(0);
+	await page.getByTestId('go-home').click();
+	await expect(page).toHaveURL(/\/$/);
+});
+
+test('a host without a key in their address is given one, and the invite link carries it', async ({
+	page
+}) => {
+	// It is their room to key: an old bookmark or a hand-typed address still
+	// opens a room, and the address bar is corrected so a reload keeps the key.
+	await page.goto(appPath('/room/K7M4PQ?create=1&s=local'));
+	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
+	expect(new URL(page.url()).hash, 'the address bar now carries the key').toMatch(
+		/^#k=[A-Z2-9]{16}$/
+	);
+	await expect(page.getByTestId('invite-link')).toHaveValue(/#k=[A-Z2-9]{16}$/);
+});
+
 test('a broken code is a dead end for a would-be host too', async ({ page }) => {
 	// `?create=1` is the host's own URL. A code that cannot name a room leaves
 	// nothing to host either, so this must not fall through to the picker.
@@ -61,7 +102,7 @@ test('a broken code is a dead end for a would-be host too', async ({ page }) => 
 });
 
 test('the relay diagnostic survives, behind a disclosure', async ({ page }) => {
-	await page.goto(appPath('/room/K7M4PQ?s=local'));
+	await page.goto(guestPath(freshRoom()));
 	await expect(page.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'failed', {
 		timeout: 60_000
 	});
@@ -172,8 +213,8 @@ test('a guest who arrives before the host picks a file knows it is connected', a
 }) => {
 	// Stops at the picker: the room is announced and the host is reachable, but
 	// there is no video yet.
-	const { code } = await openRoom(page);
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	// Regression: this said 'Looking for the host...' -- while sitting connected
 	// to it -- for as long as the host took to choose, telling a guest who had
@@ -188,8 +229,8 @@ test('a guest whose host leaves has the film stopped, not just hidden', async ({
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	await until(
 		() => snapshot(guest),
@@ -240,8 +281,8 @@ test('a guest watching fullscreen is let out of it when the room ends', async ({
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	await until(
 		() => snapshot(guest),
@@ -287,12 +328,12 @@ test('a guest watching fullscreen is let out of it when the room ends', async ({
 });
 
 test('a guest waiting for the host is told who else is waiting', async ({ page, context }) => {
-	const { code } = await openRoom(page);
+	const { code, secret } = await openRoom(page);
 
 	// Deliberately named, and deliberately not left as "Guest 284": the claim is
 	// that a guest reads the OTHER guest, and two machine-generated names that
 	// differ only in three digits make a passing assertion hard to trust.
-	const alice = await openGuest(context, code);
+	const alice = await openGuest(context, { code, secret });
 	await nameYourself(alice.page, 'guest-name', 'Alice');
 
 	// Alone with the host so far. Silence rather than "no one else is here": that
@@ -303,7 +344,7 @@ test('a guest waiting for the host is told who else is waiting', async ({ page, 
 		'a guest waiting alone is not told the room is empty'
 	).toHaveCount(0);
 
-	const bob = await openGuest(context, code);
+	const bob = await openGuest(context, { code, secret });
 	await nameYourself(bob.page, 'guest-name', 'Bob');
 
 	// Regression, and the whole claim: the host has read this same roster by name

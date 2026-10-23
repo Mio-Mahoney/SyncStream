@@ -36,7 +36,7 @@ test('a seek stops the segments it abandoned instead of finishing them', async (
 		};
 	});
 
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 
 	const guest = await context.newPage();
 	await guest.addInitScript(() => {
@@ -51,7 +51,7 @@ test('a seek stops the segments it abandoned instead of finishing them', async (
 			return send.call(this, data);
 		};
 	});
-	await openGuest(context, code, undefined, guest);
+	await openGuest(context, { code, secret }, undefined, guest);
 
 	await until(
 		() => snapshot(guest),

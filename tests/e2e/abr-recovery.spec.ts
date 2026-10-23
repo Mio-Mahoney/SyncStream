@@ -28,8 +28,8 @@ test.describe(() => {
 	test.setTimeout(360_000);
 
 	test('a guest returns to the native rung once the throttle lifts', async ({ page, context }) => {
-		const { code } = await openHost(page, 'large-2gb.mp4');
-		const { page: guest } = await openGuest(context, code);
+		const { code, secret } = await openHost(page, 'large-2gb.mp4');
+		const { page: guest } = await openGuest(context, { code, secret });
 		await until(
 			() => snapshot(guest),
 			(s) => s.ttff !== null,

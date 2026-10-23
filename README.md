@@ -8,17 +8,30 @@ Open a video off your own disk and watch it together, in sync. Nothing uploads, 
 
 The host is an origin server for its own local file. It never reads the whole thing: it reads byte ranges on demand with `File.slice()` and packages them into CMAF segments in the browser. Guests request segments over a WebRTC data channel and play them through Shaka Player, which handles buffering and adaptive bitrate. Quality becomes a per-segment choice, which is the whole point.
 
-Measured against a 2 GB file: first frame in 4.9s, seek in 43ms, under 125MB of JS heap on either side.
+What it measures today, and how, is in [STATUS.md](STATUS.md). [PLAN.md](PLAN.md) is the design and its history; [REVIEW.md](REVIEW.md) is the review the current round of fixes worked through.
 
 ```
 src/lib/
-  rendezvous/   finding each other (trystero over Nostr/MQTT/Supabase)
-  rtc/          raw RTCPeerConnection, framing, backpressure
+  rendezvous/   finding each other (trystero over Nostr/MQTT, or the local test relay)
+  rtc/          raw RTCPeerConnection, framing, backpressure, admission
   media/        probe, segmentation, MPD, WebCodecs ladder, Shaka glue
   sync/         clock offset, authoritative playback state, readiness barrier
   mesh/         guests serving segments to each other
+  protocol/     the control messages, the wire framing, and the Fault type every failure travels as
   room/         the host and guest halves, composed
 ```
+
+## The invite link
+
+A room has a six-character **code** and a sixteen-character **key**. The code is the room's name: it is what the relays see, what is printed on screen, and all a stranger needs to find out that a room exists. The key is what joining takes. It rides in the link's fragment:
+
+```
+https://example.github.io/SyncStream/room/K7M4PQ?s=nostr#k=XXXXXXXXXXXXXXXX
+```
+
+The rendezvous layer encrypts every offer and answer with a key derived from it, so a peer holding the code alone can publish on the room's topic and decrypt nothing: no connection ever forms. Browsers never send a URL's fragment in an HTTP request, so the static host serving this page does not get a copy in its logs either. This is the whole of the trust model: anyone holding the link is in, and nobody else is. There are no accounts and no server to hold a list of who is allowed.
+
+A link that has lost its fragment (chat clients sometimes trim it) is told apart from a link to nowhere, on the landing page and in the room, and the advice differs: ask the host to copy the link again, rather than re-check a code that was never the problem. Codes are no longer typed in by hand; the landing page takes the link.
 
 ## Develop
 
@@ -55,29 +68,27 @@ Nothing may construct a URL by hand -- route it through `$app/paths` or it will 
 
 ## Test
 
+Two tiers.
+
 ```bash
+bun run test:unit              # Bun, milliseconds: the pure modules
 bash tests/fixtures/gen.sh     # needs ffmpeg; the committed fixtures
-bun run test:e2e
+bun run test:e2e               # Playwright, Chromium, minutes: the integration claims
 ```
 
-The e2e tests drive two real browser contexts and assert against `window.__syncstream`, the same instrumentation the debug overlay reads. Two tests need the large fixture and skip without it:
+The unit tier (`tests/unit/`) runs the modules that have no browser in them under Bun with fakes: wire framing and the reassembly caps, the control protocol and faults, the sync engine and readiness barrier, the manifest, the rung window policy, the mesh with an in-memory peer network. It is where a bug in any of those is reproduced first; the e2e tier is for claims that need two browsers and a media pipeline.
+
+The e2e tests drive real browser contexts and assert against `window.__syncstream`, the same instrumentation the debug overlay reads. They pin rendezvous to a localhost relay (`tests/e2e/local-relay.ts`, selected with `?s=local`) so a public relay's bad minute cannot fail a run; `rendezvous.spec.ts` alone still walks the public ladder, and needs network access. A few specs need the large fixture and skip without it:
 
 ```bash
 bash tests/fixtures/gen.sh --large   # ~2GB, gitignored, slow
 ```
 
-Rendezvous uses public Nostr relays, so the suite needs network access.
+`tests/e2e/scale.spec.ts` is the acceptance measurement for PLAN.md Phase 2 and prints its numbers; `STATUS.md` records them.
 
 ## Rendezvous configuration
 
-Nostr and MQTT need no account and have no quota, so they work out of the box. To put Supabase Realtime at the front of the ladder, set:
-
-```
-PUBLIC_SUPABASE_URL=...
-PUBLIC_SUPABASE_ANON_KEY=...
-```
-
-Without them, Supabase reports itself unconfigured and the ladder skips it at no cost.
+Nostr and MQTT need no account and have no quota, so they work out of the box, and they are the whole production ladder. (Supabase Realtime was a third strategy once; it was removed after measurement, see `src/lib/rendezvous/transport.ts`.) A room announces on both at once and the invite link names the one that answered first, so a guest tries that one before walking the ladder.
 
 ## TURN configuration
 
@@ -85,8 +96,8 @@ Rendezvous only introduces two peers; the connection itself still has to cross b
 
 Whether you need it is a measurement, not a guess. Open a room with `?debug` and read **candidate type** on a real cross-network guest:
 
-- `host` / `srflx` / `prflx` -- connected directly. TURN would have changed nothing.
-- `iceState: failed` -- this connection needed TURN. With none configured a `relay` candidate can never be gathered, so failure is what "needed TURN" looks like here.
+- `host` / `srflx` / `prflx` -- connected directly. TURN would have changed nothing. The host's overlay shows the type per guest, refreshed every second; the guest's shows its own.
+- `iceState: failed` -- this connection needed TURN. With none configured a `relay` candidate can never be gathered, so an *observed* ICE failure is what "needed TURN" looks like here. A connection that merely never finished opening inside the deadline is not counted: it is usually the same thing, but it is also what a host who closed the page a moment ago looks like, and the guest's screen says so with that hedge.
 
 If that failure rate is high enough to matter:
 

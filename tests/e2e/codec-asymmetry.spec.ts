@@ -21,7 +21,7 @@ test('a guest that cannot decode the native rung is served one it can', async ({
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'hevc.mp4');
+	const { code, secret } = await openHost(page, 'hevc.mp4');
 	// The premise: HEVC plays natively on the host, so its native rung is HEVC.
 	await until(
 		() => snapshot(page),
@@ -45,7 +45,7 @@ test('a guest that cannot decode the native rung is served one it can', async ({
 					} as MediaCapabilitiesDecodingInfo)
 				: decodingInfo(config);
 	});
-	await openGuest(context, code, undefined, guest);
+	await openGuest(context, { code, secret }, undefined, guest);
 
 	const first = await until(
 		() => snapshot(guest),

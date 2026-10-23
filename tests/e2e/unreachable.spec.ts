@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { appPath } from './base';
-import { openRoom, snapshot } from './helpers';
+import { guestPath, openRoom, snapshot } from './helpers';
 
 /**
  * NET-01: a connection that fails on NAT says so.
@@ -19,7 +18,7 @@ test('a guest who finds the room but cannot connect is told that, not that nobod
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
+	const { code, secret } = await openRoom(page);
 
 	const guest = await context.newPage();
 	await guest.addInitScript(() => {
@@ -30,7 +29,7 @@ test('a guest who finds the room but cannot connect is told that, not that nobod
 			}
 		};
 	});
-	await guest.goto(appPath(`/room/${code}?debug=1&s=local`));
+	await guest.goto(guestPath({ code, secret }));
 
 	const waiting = guest.getByTestId('waiting-room');
 	await expect(waiting).toHaveAttribute('data-phase', 'unreachable', { timeout: 60_000 });
@@ -45,6 +44,18 @@ test('a guest who finds the room but cannot connect is told that, not that nobod
 	await waiting.getByText('Connection details').click();
 	await expect(waiting).toContainText('found the room');
 
-	// PLAN.md 9's measurement, counted from the side with no candidate to read.
-	expect((await snapshot(guest)).iceState).toBe('failed');
+	// What the verdict rests on is said. With no TURN server a relay-only
+	// connection gathers nothing and Chromium leaves ICE sitting rather than
+	// failing it, so this is the deadline case: the copy hedges towards a host
+	// who may have left, rather than sending someone to switch networks.
+	const cause = await waiting.locator('[data-cause]').getAttribute('data-cause');
+	expect(['ice-failed', 'timeout']).toContain(cause);
+	if (cause === 'timeout') await expect(waiting).toContainText('never finished opening');
+	else await expect(waiting).toContainText("wouldn't let a direct connection through");
+
+	// PLAN.md 9's measurement, from the side with no candidate to read: only
+	// an observed ICE failure is counted as "needed TURN". A deadline that ran
+	// out is not, because it cannot tell a strict NAT from a host who closed
+	// the page - which was the review's F-13.
+	expect((await snapshot(guest)).iceState).toBe(cause === 'ice-failed' ? 'failed' : 'new');
 });

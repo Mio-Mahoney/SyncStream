@@ -95,6 +95,83 @@ export type Source = {
 /** Inclusive sample range. One segment. */
 type SegPlan = { start: number; end: number };
 
+function fourcc(bytes: Uint8Array, at: number): string {
+	return String.fromCharCode(bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]);
+}
+
+/** Boxes that contain other boxes, which a `trun` can only be reached through. */
+const TRUN_PARENTS = new Set(['moof', 'traf']);
+const TRUN_FLAG_CTS = 0x000800;
+const TRUN_FLAG_DATA_OFFSET = 0x000001;
+const TRUN_FLAG_FIRST_FLAGS = 0x000004;
+const TRUN_FLAG_DURATION = 0x000100;
+const TRUN_FLAG_SIZE = 0x000200;
+const TRUN_FLAG_FLAGS = 0x000400;
+
+/**
+ * Marks every `trun` that carries a negative composition offset as version 1.
+ *
+ * mp4box's `createFragment` writes `sample_composition_time_offset` as the
+ * signed difference `cts - dts` whatever the source's `ctts` version was, but
+ * always stamps the box version 0, under which the field is unsigned. The
+ * written bytes are already two's complement, so a reader honouring version 1
+ * reads -512 as -512; under version 0 it reads 4294966784 and the guest's
+ * decoder is handed a frame four hundred thousand seconds late. Files with
+ * `ctts` v1 (ffmpeg `-movflags negative_cts_offsets`, some GPAC output) are
+ * exactly the ones with negative offsets, and they play fine off disk on the
+ * host - only the fragments guests consume were wrong. The fix is one byte per
+ * affected trun, done in place on the fragment just written.
+ */
+export function fixTrunVersions(bytes: Uint8Array): Uint8Array {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const walk = (start: number, end: number): void => {
+		let at = start;
+		while (at + 8 <= end) {
+			let size = view.getUint32(at);
+			const type = fourcc(bytes, at + 4);
+			let header = 8;
+			if (size === 1) {
+				// 64-bit largesize. Nothing we write is that big, but a box that
+				// claims it must still be stepped over correctly.
+				size = Number(view.getBigUint64(at + 8));
+				header = 16;
+			} else if (size === 0) {
+				size = end - at;
+			}
+			if (size < header || at + size > end) return; // malformed: leave the rest alone
+			if (TRUN_PARENTS.has(type)) walk(at + header, at + size);
+			else if (type === 'trun') fixTrun(at + header, at + size);
+			at += size;
+		}
+	};
+	const fixTrun = (start: number, end: number): void => {
+		if (start + 8 > end) return;
+		const version = bytes[start];
+		const flags = view.getUint32(start) & 0xffffff;
+		if (version !== 0 || !(flags & TRUN_FLAG_CTS)) return;
+		const count = view.getUint32(start + 4);
+		let at = start + 8;
+		if (flags & TRUN_FLAG_DATA_OFFSET) at += 4;
+		if (flags & TRUN_FLAG_FIRST_FLAGS) at += 4;
+		const perSample =
+			(flags & TRUN_FLAG_DURATION ? 4 : 0) +
+			(flags & TRUN_FLAG_SIZE ? 4 : 0) +
+			(flags & TRUN_FLAG_FLAGS ? 4 : 0);
+		for (let i = 0; i < count; i++) {
+			const ctsAt = at + perSample;
+			if (ctsAt + 4 > end) return;
+			// Bit 31 set is a negative offset in the bytes as written.
+			if (bytes[ctsAt] & 0x80) {
+				bytes[start] = 1;
+				return;
+			}
+			at = ctsAt + 4;
+		}
+	};
+	walk(0, bytes.byteLength);
+	return bytes;
+}
+
 type TrackState = {
 	trackId: number;
 	trak: Trak;
@@ -722,7 +799,7 @@ export async function createSource(file: File, probe: ProbeResult): Promise<Sour
 			// with spare capacity the stream reports the whole buffer, and the tail
 			// of it is uninitialized. Correct either way, since an undersized guess
 			// leaves the stream exactly full.
-			return new Uint8Array(stream.buffer, 0, stream.getPosition()).slice();
+			return fixTrunVersions(new Uint8Array(stream.buffer, 0, stream.getPosition()).slice());
 		} finally {
 			// Both of these are the bounded-memory contract. releaseUsedSamples()
 			// is the usual call, but it only walks forward from lastValidSample and

@@ -57,8 +57,8 @@ test('a film trimmed with an edit list shows host and guest the same frame', asy
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'edit-list.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'edit-list.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,

@@ -103,6 +103,15 @@ echo "==> edit-list.mp4 - trimmed without re-encoding, so the trim is an edit li
 # into a 2s GOP, which is the mid-GOP edit start that is hardest to honour.
 ffmpeg -y -loglevel error -ss 5 -i tiny-60s.mp4 -t 20 -c copy -movflags +faststart edit-list.mp4
 
+echo "==> fragmented.mp4 - already fMP4, so there is no sample table to cut from"
+# What -movflags frag_keyframe (and any recorded MSE stream, or a DASH segment
+# file) produces: an empty moov and the index spread across moofs. The probe
+# must reject it naming the cause; it used to pass as 'direct' and fail inside
+# the origin with an internal string, after tearing down the film already on.
+# Cut from tiny-60s.mp4 so the codecs are the ones that pass everywhere.
+ffmpeg -y -loglevel error -i tiny-60s.mp4 -t 10 -c copy \
+	-movflags frag_keyframe+empty_moov+default_base_moof fragmented.mp4
+
 if [[ "${1:-}" == "--large" ]]; then
 	echo "==> large-2gb.mp4 (gitignored, slow) - the Phase 0 reproduction file"
 	# shellcheck disable=SC2046

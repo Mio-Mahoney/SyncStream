@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { nameYourself, openGuest, openHost, openRoom, snapshot, until } from './helpers';
-import { appPath } from './base';
+import { guestPath, nameYourself, openGuest, openHost, openRoom, snapshot, until } from './helpers';
 
 /**
  * Nobody in this watch party had a name.
@@ -21,8 +20,11 @@ test('a guest says who it is, and the room stops calling it a number', async ({
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const [alice, bob] = await Promise.all([openGuest(context, code), openGuest(context, code)]);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const [alice, bob] = await Promise.all([
+		openGuest(context, { code, secret }),
+		openGuest(context, { code, secret })
+	]);
 
 	// Two guests racing a cold rendezvous is the slowest thing this file does, and
 	// it is setup rather than the claim - so it is waited for on its own, and the
@@ -79,11 +81,11 @@ test('the host says who it is, and guests both here and yet to come hear it', as
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
+	const { code, secret } = await openRoom(page);
 	// Already in the room, and reading the host's name off the hello it sent
 	// before it had one - the roster is not sent until there is a film, so this
 	// guest is precisely the one a rename could fail to reach.
-	const early = await openGuest(context, code);
+	const early = await openGuest(context, { code, secret });
 	await expect(early.page.getByTestId('waiting-room')).toContainText('Connected to Host.', {
 		timeout: 45_000
 	});
@@ -97,7 +99,7 @@ test('the host says who it is, and guests both here and yet to come hear it', as
 
 	// And whoever turns up next meets the host under its real name, rather than
 	// being introduced to "Host" and corrected later.
-	const late = await openGuest(context, code);
+	const late = await openGuest(context, { code, secret });
 	await expect(late.page.getByTestId('waiting-room')).toContainText('Connected to Mio.', {
 		timeout: 45_000
 	});
@@ -128,7 +130,7 @@ test('a name is said once, not once per room', async ({ page }) => {
  * cannot reach - so the test has to be the thing the UI is not.
  */
 test('a name off the wire cannot wreck the room it lands in', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 
 	const guest = await context.newPage();
 	await guest.addInitScript(() => {
@@ -148,10 +150,9 @@ test('a name off the wire cannot wreck the room it lands in', async ({ page, con
 			return (send as (d: unknown) => void).call(this, data);
 		};
 	});
-	// `s=local` by hand: this guest cannot go through openGuest -- the forged
-	// send has to be installed before any page script runs -- so it must also
-	// say itself which relay the room is on.
-	await guest.goto(appPath(`/room/${code}?debug=1&s=local`));
+	// Not through openGuest: the forged send has to be installed before any
+	// page script runs, so the page is made first and the URL built by hand.
+	await guest.goto(guestPath({ code, secret }));
 
 	await until(
 		() => snapshot(page),

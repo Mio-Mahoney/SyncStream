@@ -23,10 +23,14 @@ test.describe.configure({ retries: 2 });
 test('the public relay ladder still carries a room end to end', async ({ page, context }) => {
 	// 'nostr' is the ladder's own first rung, so this is exactly the production
 	// default -- stated explicitly because the helpers otherwise pin to 'local'.
-	const { code, errors: hostErrors } = await openRoom(page, { strategy: 'nostr' });
-	const { page: guest, errors: guestErrors } = await openGuest(context, code, {
-		strategy: 'nostr'
-	});
+	const { code, secret, errors: hostErrors } = await openRoom(page, { strategy: 'nostr' });
+	const { page: guest, errors: guestErrors } = await openGuest(
+		context,
+		{ code, secret },
+		{
+			strategy: 'nostr'
+		}
+	);
 
 	// The guest read the host's hello: rendezvous found a common relay and the
 	// control channel opened.

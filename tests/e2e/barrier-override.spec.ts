@@ -16,8 +16,8 @@ test('playing through the barrier takes its banner down, and it stays down', asy
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(page),
 		(s) => s.peers.length === 1,

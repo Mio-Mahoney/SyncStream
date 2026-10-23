@@ -16,8 +16,8 @@ import {
  * not conclude the file is unusual, they conclude the product is broken".
  */
 test('moov-at-end plays, which is the most common real-world shape', async ({ page, context }) => {
-	const { code } = await openHost(page, 'moov-at-end.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'moov-at-end.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	const s = await until(
 		() => snapshot(guest),
@@ -32,8 +32,8 @@ test('moov-at-end plays, which is the most common real-world shape', async ({ pa
 });
 
 test('a file with no audio track plays', async ({ page, context }) => {
-	const { code } = await openHost(page, 'no-audio.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'no-audio.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(x) => x.ttff !== null,
@@ -139,8 +139,8 @@ test("a guest is told the host's file will not play, and not blamed for it", asy
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
-	const { page: guest, errors } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest, errors } = await openGuest(context, { code, secret });
 	// The rejection is broadcast at the moment of rejection, so a guest only ever
 	// hears about it by being in the room first.
 	await until(
@@ -171,8 +171,8 @@ test('a host picking a playable file clears the rejection from the guest', async
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
-	const { page: guest, errors } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest, errors } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.peers.some((p) => p.role === 'host'),
@@ -214,8 +214,8 @@ test('a host picking a playable file clears the rejection from the guest', async
  * needs the long fixture the plan already specifies.
  */
 test('a throttled guest drops down the ladder and keeps playing', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,
@@ -276,7 +276,35 @@ test('a throttled guest drops down the ladder and keeps playing', async ({ page,
 		}
 	);
 	expect((await snapshot(guest)).bufferedAhead).toBeGreaterThan(0);
+	// "zero stalls" counted as stalls, not inferred from the playhead moving:
+	// a one-second rebuffer passes the assertion above (REVIEW T-07).
+	expect((await snapshot(guest)).stalls, 'stalls since the film started').toBe(0);
 });
+
+/**
+ * Two fixtures gen.sh has produced since Phase 0 and no spec ever loaded
+ * (REVIEW T-12). Variable frame rate is what phone recordings and screen
+ * captures are; 5.1 audio is what a remuxed disc has. Both must simply play.
+ */
+for (const file of ['vfr.mp4', 'surround-5.1.mp4']) {
+	test(`${file} plays to a first frame and keeps going`, async ({ page, context }) => {
+		const { code, secret, errors } = await openHost(page, file);
+		const { page: guest, errors: guestErrors } = await openGuest(context, { code, secret });
+		await until(
+			() => snapshot(guest),
+			(s) => s.ttff !== null,
+			{ what: `the guest to play ${file}`, timeout: 60_000 }
+		);
+		await page.getByTestId('play').click();
+		await until(
+			() => videoTime(guest),
+			(t) => t > 3,
+			{ what: 'the guest to advance', timeout: 30_000 }
+		);
+		expect((await snapshot(guest)).stalls).toBe(0);
+		expect(errors.concat(guestErrors), 'page errors').toEqual([]);
+	});
+}
 
 /**
  * A host who puts on the wrong film had one way out: reload, which ends the
@@ -284,8 +312,8 @@ test('a throttled guest drops down the ladder and keeps playing', async ({ page,
  * choosing a film only existed before there was one to regret.
  */
 test('the host can change the video without ending the room', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	await until(
 		() => snapshot(guest),

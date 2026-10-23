@@ -1,6 +1,17 @@
 /**
  * The trystero strategy ladder (PLAN.md 4.6).
  *
+ * `password` on every join is the room's key (codes.ts). trystero derives the
+ * AES-GCM key for every offer, answer and candidate it relays from
+ * password+appId+roomId, and runs a challenge handshake over the data channel
+ * before it reports a peer. Without the key, a peer that knows the code can
+ * publish on the room's topic and decrypt nothing, so no connection ever
+ * forms. That handshake authenticates only the responder to the initiator,
+ * which would matter if a connection could be reached without the SDP
+ * exchange - trystero shares one connection between rooms of the same appId
+ * within a page - but a SyncStream page is in exactly one room, so there is
+ * no second room to be reached through, and the encryption is the whole gate.
+ *
  * trystero is rendezvous ONLY. Nothing in this file touches `makeAction`,
  * `addStream`, or any other trystero data path. A `RendezvousSession` hands
  * back the raw `RTCPeerConnection` from `room.getPeers()` and `$lib/rtc` owns
@@ -288,7 +299,12 @@ const nostr: SignalingTransport = {
 		beginNegotiationLog();
 
 		const room = joinRoom(
-			{ appId: APP_ID, rtcConfig: RTC_CONFIG, rtcPolyfill: watchedPeerConnection() },
+			{
+				appId: APP_ID,
+				password: opts?.secret,
+				rtcConfig: RTC_CONFIG,
+				rtcPolyfill: watchedPeerConnection()
+			},
 			roomId
 		);
 		try {
@@ -311,7 +327,12 @@ const mqtt: SignalingTransport = {
 		beginNegotiationLog();
 
 		const room = joinRoom(
-			{ appId: APP_ID, rtcConfig: RTC_CONFIG, rtcPolyfill: watchedPeerConnection() },
+			{
+				appId: APP_ID,
+				password: opts?.secret,
+				rtcConfig: RTC_CONFIG,
+				rtcPolyfill: watchedPeerConnection()
+			},
 			roomId
 		);
 		try {
@@ -341,6 +362,7 @@ const local: SignalingTransport = {
 		const room = joinLocalRoom(
 			{
 				appId: APP_ID,
+				password: opts?.secret,
 				rtcConfig: RTC_CONFIG,
 				rtcPolyfill: watchedPeerConnection(),
 				relayConfig: { urls: [LOCAL_RELAY_URL!] }

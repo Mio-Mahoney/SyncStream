@@ -63,10 +63,10 @@ test('a guest who joins before the video is picked shows up for the host', async
 	page,
 	context
 }) => {
-	const { code, errors } = await openRoom(page);
+	const { code, secret, errors } = await openRoom(page);
 	await expect(page.getByTestId('invite-guests')).toHaveText(/No one has joined yet/);
 
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	// The host knew this all along -- `guests` is populated on the first hello --
 	// but the only thing rendering it lived inside the player block, hidden until
@@ -113,10 +113,10 @@ test('a clipboard refused during playback reveals the link instead of throwing',
 });
 
 test('the host sees who is watching by name while the film plays', async ({ page, context }) => {
-	const { code, errors } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret, errors } = await openHost(page, 'tiny-60s.mp4');
 	await expect(page.getByTestId('guests')).toHaveText(/No one has joined yet/, { timeout: 45_000 });
 
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 
 	// Not "1 watching". The count made the host trust a number; the name is the
 	// same fact with the evidence attached, and it is the one the panel already
@@ -130,8 +130,8 @@ test('a guest watching alone with the host is told so, and never named to itself
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest, errors } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest, errors } = await openGuest(context, { code, secret });
 
 	// The mirror of the host's line above, and the half that was missing: with the
 	// film up, a guest's entire page was the room code and a clock.
@@ -147,11 +147,11 @@ test('a guest watching alone with the host is told so, and never named to itself
 });
 
 test('a guest is told about the guests it is not meshed with', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 	const guests = await Promise.all([
-		openGuest(context, code),
-		openGuest(context, code),
-		openGuest(context, code)
+		openGuest(context, { code, secret }),
+		openGuest(context, { code, secret }),
+		openGuest(context, { code, secret })
 	]);
 
 	// Three, deliberately, and this is the assertion that needs them. The mesh

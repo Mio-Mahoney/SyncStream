@@ -150,6 +150,17 @@ export type PeerChannels = {
 	cancelOutbound(reqId: number): void;
 	onControl(cb: (msg: ControlMessage) => void): () => void;
 	onSegment(cb: (reqId: number, payload: Uint8Array) => void): () => void;
+	/**
+	 * We have asked the remote for `reqId` and will take its SegData frames.
+	 *
+	 * Admission is what makes the reassembly caps a bound on something: without
+	 * it, any connected peer could open a partial transfer under any reqId it
+	 * liked, on a side that never asked for anything - the host most of all,
+	 * which serves every guest and requests nothing. A frame for a reqId nobody
+	 * expects is dropped before a byte of it is retained. The expectation ends
+	 * when the payload completes or `cancelInbound` gives up on it.
+	 */
+	expectInbound(reqId: number): void;
 	cancelInbound(reqId: number): void;
 	readonly stats: ChannelStats;
 	onClose(cb: () => void): () => void;
@@ -213,6 +224,8 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 	const gateWaiters = new Set<() => void>();
 	/** Insertion-ordered, so the oldest entry is the one to evict. */
 	const cancelled = new Set<number>();
+	/** reqIds this side has asked the remote for and not yet received or given up on. */
+	const expected = new Set<number>();
 	/** Sends in flight, by the remote's reqId, so its `segCancel` can stop one. */
 	const sending = new Map<number, AbortController>();
 	/**
@@ -280,6 +293,7 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 		gateWaiters.clear();
 		reassembler.clear();
 		cancelled.clear();
+		expected.clear();
 		for (const c of sending.values()) c.abort();
 		sending.clear();
 		cancelledOutbound.clear();
@@ -312,14 +326,17 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 		try {
 			const frame = decodeFrame(ev.data);
 			if (frame.type !== WireMsgType.SegData) return;
-			if (cancelled.has(frame.requestId)) return;
 			reqId = frame.requestId;
+			// Not asked for, or no longer wanted: dropped before anything is
+			// allocated for it. See `expectInbound`.
+			if (!expected.has(reqId) || cancelled.has(reqId)) return;
 			done = reassembler.push(frame);
 		} catch {
 			// Malformed framing costs us one dropped request, not the connection.
 			return;
 		}
 		if (!done) return;
+		expected.delete(reqId);
 		for (const cb of [...segmentCbs]) cb(reqId, done);
 	}
 
@@ -473,7 +490,13 @@ export function attachChannels(pc: RTCPeerConnection, peerId: string): PeerChann
 			return () => segmentCbs.delete(cb);
 		},
 
+		expectInbound(reqId: number): void {
+			expected.add(reqId);
+			cancelled.delete(reqId);
+		},
+
 		cancelInbound(reqId: number): void {
+			expected.delete(reqId);
 			reassembler.cancel(reqId);
 			// Dropping the partial is not enough on its own: chunks already handed
 			// to SCTP keep arriving and would open a fresh entry that never

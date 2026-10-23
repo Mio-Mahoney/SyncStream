@@ -45,6 +45,8 @@ export type PeerStat = {
 	atEnd: boolean;
 	rung: number | null;
 	candidateType: CandidateType;
+	/** This guest's player refused the film (`CannotPlay`), so it is not waited on. */
+	cannotPlay: boolean;
 };
 
 export type SyncStreamStats = {
@@ -99,6 +101,23 @@ export type SyncStreamStats = {
 	 */
 	ttff: number | null;
 	/**
+	 * Times this element ran dry mid-play (`waiting` events outside a seek)
+	 * since the current film started. "Zero stalls" is PLAN.md Phase 2's
+	 * criterion, and until this existed the tests inferred it from the playhead
+	 * advancing, which a stall of a second passes.
+	 */
+	stalls: number;
+	/**
+	 * Where the time before first frame went, in milliseconds, so a TTFF miss
+	 * can be attributed rather than guessed at. Host: `probeMs` (reading the
+	 * moov and asking the browser about codecs) and `originMs` (indexing the
+	 * file and fixing the ladder's encoder configs); together they are what a
+	 * guest waits for before `ready` is even sent. Guest: `readyToLoadMs` (any
+	 * teardown queued ahead of this film) and `loadMs` (Shaka's load, which is
+	 * the manifest, the init segments and the first media segment).
+	 */
+	timings: Record<string, number>;
+	/**
 	 * Phase 5 mesh accounting, refreshed on the guest's status tick. Null on
 	 * the host (which is the origin, not a mesh peer) and before a guest's
 	 * host link is up. `fromPeers` and `uploaded` are what prove the mesh
@@ -129,6 +148,8 @@ function initial(): SyncStreamStats {
 		waitingOn: [],
 		peers: [],
 		ttff: null,
+		stalls: 0,
+		timings: {},
 		mesh: null
 	};
 }
@@ -155,6 +176,12 @@ let ttffOrigin = 0;
 export function markTtffStart(): void {
 	ttffOrigin = performance.now();
 	stats.ttff = null;
+	stats.stalls = 0;
+}
+
+/** The element ran dry mid-play. See `SyncStreamStats.stalls`. */
+export function noteStall(): void {
+	stats.stalls++;
 }
 
 /** Idempotent: first frame means the first one, so later calls do not overwrite. */
@@ -176,7 +203,8 @@ const PEER_DEFAULTS: Omit<PeerStat, 'peerId'> = {
 	bufferedAhead: 0,
 	atEnd: false,
 	rung: null,
-	candidateType: 'unknown'
+	candidateType: 'unknown',
+	cannotPlay: false
 };
 
 /**

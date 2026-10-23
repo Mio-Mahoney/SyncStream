@@ -17,12 +17,20 @@ import {
 	playerBufferAhead
 } from '$lib/media/shaka/config';
 import { registerSyncStreamScheme, unregisterSyncStreamScheme } from '$lib/media/shaka/scheme';
+import { fallbackName, remoteName } from '$lib/identity';
 import { createMesh, type Mesh } from '$lib/mesh/mesh';
-import type { ControlMessage, Track } from '$lib/protocol/control';
+import { isFault, type ControlMessage, type Fault, type Track } from '$lib/protocol/control';
 import { joinRoomByCode, UnreachableError } from '$lib/rendezvous/room';
 import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
-import { markFirstFrame, markTtffStart, removePeer, stats, updatePeer } from '$lib/stats.svelte';
+import {
+	markFirstFrame,
+	markTtffStart,
+	noteStall,
+	removePeer,
+	stats,
+	updatePeer
+} from '$lib/stats.svelte';
 import { ClockSync } from '$lib/sync/clock';
 import { BARRIER_LOW_SEC, GuestSync } from '$lib/sync/state';
 import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
@@ -42,6 +50,8 @@ export type GuestRoom = {
 export type GuestRoomOptions = {
 	video: HTMLMediaElement;
 	code: string;
+	/** The room's key, off the invite link (codes.ts). */
+	secret: string;
 	/** What to call ourselves until `setName` says otherwise. */
 	name: string;
 	preferred?: StrategyName;
@@ -86,7 +96,20 @@ export type GuestRoomOptions = {
 	 * line above and is asking who *else* turned up.
 	 */
 	onCompany: (room: { host: string; guests: string[] }) => void;
-	onUnplayable: (reason: string) => void;
+	onUnplayable: (fault: Fault) => void;
+	/**
+	 * The host tried to put on another film and could not; the one playing
+	 * stays on. Rendered beside it, never in place of it.
+	 */
+	onSwitchFailed: (title: string, fault: Fault) => void;
+	/**
+	 * Rendezvous found people in the room, and none of them is the host, for
+	 * long enough that it is not just slow. The host closed its tab after a
+	 * guest stayed, most likely. The search carries on; this is so the screen
+	 * can say what it is waiting for instead of spinning on "looking for the
+	 * room" indefinitely.
+	 */
+	onNoHost: () => void;
 	/**
 	 * Who the room is being held for. `on` names the other guests; `you` says
 	 * this guest is one of them, which is not derivable here - a guest is never
@@ -105,18 +128,26 @@ export type GuestRoomOptions = {
 
 const STATUS_MS = 1000;
 
+/**
+ * How long after rendezvous to wait for a host's hello before saying so.
+ * Rendezvous resolves on *a* peer, which under Phase 5 may be another guest;
+ * a host that is there says hello within a round trip of the link opening.
+ */
+export const HOST_HELLO_MS = 10_000;
+
 export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom> {
 	stats.role = 'guest';
 	stats.room = opts.code;
-	const session = await joinRoomByCode(opts.code, opts.preferred, { signal: opts.signal }).catch(
-		(err: unknown) => {
-			// The PLAN.md 9 measurement, from the side that has no candidate type
-			// to record: with no TURN configured, a connection that needed a
-			// relay is one that never opened (see stats.svelte.ts).
-			if (err instanceof UnreachableError) stats.iceState = 'failed';
-			throw err;
-		}
-	);
+	const session = await joinRoomByCode(opts.code, opts.secret, opts.preferred, {
+		signal: opts.signal
+	}).catch((err: unknown) => {
+		// The PLAN.md 9 measurement, from the side that has no candidate type to
+		// record: with no TURN configured, a connection that needed a relay is
+		// one that never opened (see stats.svelte.ts). Only an *observed* ICE
+		// failure counts; a deadline that ran out says nothing about why.
+		if (err instanceof UnreachableError && err.cause === 'ice-failed') stats.iceState = 'failed';
+		throw err;
+	});
 	stats.strategy = session.strategy;
 
 	const net: PeerNetwork = createPeerNetwork([session]);
@@ -150,6 +181,8 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	let name = opts.name;
 	let player: shaka.Player | null = null;
 	let mesh: Mesh | null = null;
+	/** `close()` has run. Checked after every await that could outlive it. */
+	let closed = false;
 	/**
 	 * The host's latest `meshPlan`, kept outside the mesh because the mesh does
 	 * not outlive the film (stopPlayback rebuilds it) while the stripe is about
@@ -157,16 +190,36 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 */
 	let meshPlan: { slot: number; of: number; rungs: number[] } | null = null;
 	/**
-	 * The manifest of the film in play, or null when there is none.
+	 * The id of the film in play (`Ready.film`), or null when there is none.
 	 *
 	 * Identity rather than a boolean, because both questions matter and they have
 	 * different answers: the host re-sends `ready` for the film already playing
 	 * (once from `onPeer`, once from the hello it answers), and a repeat of that
-	 * must not restart anything - while a genuinely different film must.
+	 * must not restart anything - while a genuinely different film must. The id
+	 * and not the manifest text: a renamed copy of the same file emits the same
+	 * manifest, and used to be taken for a repeat.
 	 */
-	let loadedMpd: string | null = null;
+	let loadedFilmId: string | null = null;
+	/**
+	 * A film this player refused (`cannotPlay` was sent for it). The status tick
+	 * stays quiet for it, and a later `ready` for the same id is not retried:
+	 * the browser's answer does not change until the film does.
+	 */
+	let refusedFilmId: string | null = null;
 	/** What `onReady` said about that film, to say again if its host comes back. */
 	let loadedFilm: { duration: number; title: string } | null = null;
+
+	/**
+	 * Names off the wire, through the gate the host's go through (identity.ts
+	 * `remoteName`): a junk name keeps whatever the peer was called, and a
+	 * peer whose first word is junk still gets one.
+	 */
+	const nameFrom = (peerId: string, raw: unknown, role: 'host' | 'guest'): string => {
+		const known = stats.peers.find((p) => p.peerId === peerId)?.name;
+		// `updatePeer` seeds a peer's name with its id, which is not a name.
+		const prev = known && known !== peerId ? known : '';
+		return remoteName(raw, prev || fallbackName(role));
+	};
 
 	const clock = new ClockSync((msg) => hostLink?.channels.sendControl(msg));
 	const sync = new GuestSync(opts.video, clock);
@@ -210,6 +263,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			if (!link) return reject(new Error('guest: no host connected'));
 
 			const reqId = nextReqId++;
+			const filmId = loadedFilmId ?? '';
 			const finish = (err: () => Error) => {
 				const p = pending.get(reqId);
 				if (!p) return;
@@ -264,7 +318,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				}
 			});
 			stats.segmentQueue = pending.size;
-			link.channels.sendControl({ t: 'segReq', reqId, repId, track, segIdx });
+			// Admit the reply before asking for it (channel.ts expectInbound).
+			link.channels.expectInbound(reqId);
+			link.channels.sendControl({ t: 'segReq', reqId, repId, track, segIdx, film: filmId });
 		});
 
 	const settle = (reqId: number, fn: (p: NonNullable<ReturnType<typeof pending.get>>) => void) => {
@@ -291,8 +347,8 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * it re-wires the room rather than dropping it.
 	 */
 	const stopPlayback = async () => {
-		if (loadedMpd === null) return;
-		loadedMpd = null;
+		if (loadedFilmId === null) return;
+		loadedFilmId = null;
 		loadedFilm = null;
 		sync.stop();
 		opts.video.pause();
@@ -307,31 +363,91 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			settle(reqId, (p) => p.reject(new Error('guest: the host changed the video')));
 
 		mesh?.close();
-		mesh = hostLink
-			? createMesh({ network: net, hostPeerId: hostLink.peerId, fetchFromHost })
-			: null;
-		if (meshPlan) mesh?.setPlan(meshPlan.slot, meshPlan.of, meshPlan.rungs);
+		mesh = null;
 	};
 
-	const startPlayback = async (mpd: string, duration: number, title: string) => {
-		if (loadedMpd === mpd) return;
-		await stopPlayback();
+	/** A mesh for `filmId`, around the host we have. Null with no host to build it around. */
+	const buildMesh = (filmId: string): Mesh | null => {
+		if (!hostLink) return null;
+		const m = createMesh({
+			network: net,
+			hostPeerId: hostLink.peerId,
+			fetchFromHost,
+			film: filmId
+		});
+		if (meshPlan) m.setPlan(meshPlan.slot, meshPlan.of, meshPlan.rungs);
+		return m;
+	};
 
-		// `stopPlayback` rebuilds the mesh around the host, and leaves it null when
-		// there is no longer a host to build it around - it tears the old player
-		// down first, and a host who closes their tab during a film change is gone
-		// by the time it reads the link. There is no film to start without one, and
-		// asserting the mesh here instead threw a TypeError out through
-		// `queuePlayback`'s catch into `onError`, which outranks `roomOver` on the
-		// page: the guest lost the screen that says the party is over, and the way
-		// home on it, and read a raw JS error in its place. Leaving is not an error.
+	const startPlayback = async (
+		filmId: string,
+		mpd: string,
+		duration: number,
+		title: string,
+		/** When the host's `ready` arrived, so the queue's share of first frame is measured. */
+		readyAt: number
+	) => {
+		if (loadedFilmId === filmId || refusedFilmId === filmId) return;
+		await stopPlayback();
+		if (closed) return;
+
+		// `stopPlayback` tore the old player down first, and a host who closes
+		// their tab during a film change is gone by the time it reads the link.
+		// There is no film to start without one, and asserting the mesh here
+		// instead threw a TypeError out through `queuePlayback`'s catch into
+		// `onError`, which outranks `roomOver` on the page: the guest lost the
+		// screen that says the party is over, and the way home on it, and read
+		// a raw JS error in its place. Leaving is not an error.
+		mesh = buildMesh(filmId);
 		if (!mesh) return;
 
-		loadedMpd = mpd;
+		loadedFilmId = filmId;
+		refusedFilmId = null;
 		mesh.noteDuration(duration);
 		markTtffStart();
+		stats.timings.readyToLoadMs = Math.round(performance.now() - readyAt);
 
-		player = await createPlayer(opts.video);
+		/**
+		 * This browser cannot play the film: said to the host, which lets the
+		 * barrier go of us and names the real cause, and thrown here as the thing
+		 * the viewer can act on, which for a codec is usually "another browser".
+		 * Both the player's construction (Shaka refuses a browser whose MSE
+		 * accepts no codec at all) and its load (no playable variant) land here.
+		 */
+		const refuse = async (err: unknown): Promise<never> => {
+			const fault: Fault = {
+				code: 'unsupported-here',
+				detail: describePlaybackError(err),
+				remedy:
+					'Try a different browser on this device - a current Chrome or Edge plays the most formats.'
+			};
+			refusedFilmId = filmId;
+			// Nothing of this film stays up: the player (so the status tick falls
+			// silent - a player with no film reported an empty buffer every second,
+			// which is the stall the barrier then held the room for), the mesh built
+			// around it, and the scheme handler pointing at that mesh.
+			loadedFilmId = null;
+			const failed = player;
+			player = null;
+			unregisterSyncStreamScheme();
+			mesh?.close();
+			mesh = null;
+			await failed?.destroy().catch(() => {});
+			hostLink?.channels.sendControl({ t: 'cannotPlay', film: filmId, fault });
+			throw Object.assign(new Error(fault.detail), { fault });
+		};
+
+		try {
+			player = await createPlayer(opts.video);
+		} catch (err) {
+			await refuse(err);
+		}
+		if (!player) return;
+		if (closed || loadedFilmId !== filmId) {
+			await player.destroy();
+			player = null;
+			return;
+		}
 		player.addEventListener('error', (e) =>
 			opts.onError(new Error(describePlaybackError((e as unknown as { detail?: unknown }).detail)))
 		);
@@ -346,28 +462,78 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		// unit would tell Shaka the link is 8x slower than it is and pin every
 		// guest to the bottom rung.
 		const measuredBps = (hostLink?.channels.stats.throughputBps ?? 0) * 8;
-		configurePlayer(player, measuredBps > 0 ? { bandwidthEstimate: measuredBps } : {});
+		// The rung window goes on before load, read off the manifest itself: the
+		// first variant Shaka picks is chosen during load, and that is the pick a
+		// guest without the native codec most needs steered (rungs.ts).
+		configurePlayer(player, {
+			...(measuredBps > 0 ? { bandwidthEstimate: measuredBps } : {}),
+			availableRungs: stats.availableRungs,
+			mpd
+		});
+
+		// Where the host is, so the first segments fetched are the ones that will
+		// be watched. Without this the player buffered position 0, marked a
+		// first frame nobody saw, and then hard-seeked to the host's position and
+		// did it all again - two seconds of join latency spent on the wrong part
+		// of the film, and a TTFF measured on it.
+		const start = startPosition();
 
 		const blob = URL.createObjectURL(new Blob([mpd], { type: 'application/dash+xml' }));
+		const loadStarted = performance.now();
 		try {
-			await player.load(blob);
+			await player.load(blob, start);
 		} catch (err) {
-			// Shaka rejects with its own error type, whose message is a bare code.
-			throw new Error(describePlaybackError(err));
+			await refuse(err);
 		} finally {
 			URL.revokeObjectURL(blob);
 		}
+		stats.timings.loadMs = Math.round(performance.now() - loadStarted);
+		if (closed || loadedFilmId !== filmId) return;
 
-		// Restrictions only bite once variants exist, which is after load().
-		// Applying them before is a silent no-op, and a silent no-op here means
-		// Shaka can pick a rung the host has not encoded yet.
+		// Restrictions re-applied against the loaded variants: the manifest read
+		// above predicted them, and the loaded list is the truth.
 		configurePlayer(player, { availableRungs: stats.availableRungs });
 
-		opts.video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
+		// A painted frame, where the browser can say so, rather than
+		// `loadeddata` (which fires on HAVE_CURRENT_DATA, before any paint).
+		markOnFirstPaint(opts.video);
+		opts.video.addEventListener('waiting', onStall);
 		clock.start();
 		sync.start();
 		loadedFilm = { duration, title };
 		opts.onReady(loadedFilm);
+	};
+
+	/**
+	 * The host's position as a load-time start, in the stream's seconds. Null
+	 * when nothing is known yet (the host's `state` has not arrived), which is
+	 * Shaka's own default. A paused host is at its mediaTime; a playing one has
+	 * moved on since the message, by the clock if it is measured and by nothing
+	 * otherwise - the sync engine corrects the rest once it runs.
+	 */
+	const startPosition = (): number | undefined => {
+		const s = sync.lastState;
+		if (!s) return undefined;
+		const elapsedSec =
+			s.playing && clock.samples > 0 ? (clock.hostNow() - s.atHostClock) / 1000 : 0;
+		const t = s.mediaTime + Math.max(0, elapsedSec);
+		return Number.isFinite(t) && t > 0 ? t : undefined;
+	};
+
+	/** A stall the viewer saw: the element ran out of data mid-play. */
+	const onStall = () => {
+		if (!opts.video.seeking) noteStall();
+	};
+
+	const markOnFirstPaint = (video: HTMLMediaElement): void => {
+		const v = video as HTMLVideoElement & {
+			requestVideoFrameCallback?: (cb: () => void) => number;
+		};
+		if (typeof v.requestVideoFrameCallback === 'function') {
+			v.requestVideoFrameCallback(() => markFirstFrame());
+		} else {
+			video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
+		}
 	};
 
 	/**
@@ -377,10 +543,13 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 	 * still building the thing being torn down.
 	 */
 	let playback: Promise<void> = Promise.resolve();
-	const queuePlayback = (mpd: string, duration: number, title: string) => {
+	const queuePlayback = (filmId: string, mpd: string, duration: number, title: string) => {
+		const readyAt = performance.now();
 		playback = playback
-			.then(() => startPlayback(mpd, duration, title))
-			.catch((err: Error) => opts.onError(err));
+			.then(() => startPlayback(filmId, mpd, duration, title, readyAt))
+			.catch((err: Error) => {
+				if (!closed) opts.onError(err);
+			});
 	};
 
 	/**
@@ -412,17 +581,15 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		// different host's has to be waited for rather than carried over.
 		if (replaced) meshPlan = null;
 
-		if (replaced && loadedMpd !== null) {
+		if (replaced && loadedFilmId !== null) {
 			// A different page is a different origin, and it has no file yet. The
 			// film we hold cannot be continued from it, and keeping it would make
-			// the same file picked again look like the film already playing
-			// (`loadedMpd`). Queued, so it lands ahead of any `ready` that follows.
+			// the same file picked again look like the film already playing.
+			// Queued, so it lands ahead of any `ready` that follows.
 			playback = playback.then(stopPlayback).catch((err: Error) => opts.onError(err));
-		} else if (replaced || !mesh) {
-			mesh?.close();
-			mesh = createMesh({ network: net, hostPeerId: link.peerId, fetchFromHost });
-			if (meshPlan) mesh.setPlan(meshPlan.slot, meshPlan.of, meshPlan.rungs);
 		}
+		// No mesh is built here: a mesh is per film, and `startPlayback` builds
+		// one around whichever host is current when the film arrives.
 
 		stats.candidateType = link.candidateType;
 		opts.onHostName(hostName);
@@ -456,15 +623,19 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				const first = !helloSeen.has(link.peerId);
 				helloSeen.add(link.peerId);
 				if (first) link.channels.sendControl({ t: 'hello', role: 'guest', name });
-				updatePeer(link.peerId, { name: msg.name, role: msg.role });
+				// Every name off the wire goes through the same gate the host puts
+				// them through (identity.ts): the one that renders is the one that
+				// was checked.
+				const peerName = nameFrom(link.peerId, msg.name, msg.role === 'host' ? 'host' : 'guest');
+				updatePeer(link.peerId, { name: peerName, role: msg.role === 'host' ? 'host' : 'guest' });
 				if (msg.role === 'host') {
-					hostClaims.set(link.peerId, { link, name: msg.name });
-					if (hostLink === null) adoptHost(link, msg.name);
+					hostClaims.set(link.peerId, { link, name: peerName });
+					if (hostLink === null) adoptHost(link, peerName);
 					// A repeated hello from our own host (the answer above is one
 					// source; the probe-and-real handlers on the host are another)
 					// changes nothing but possibly the name. One from anybody else
 					// is a claim, and `hostClaims` is where those wait.
-					else if (hostLink === link) opts.onHostName(msg.name);
+					else if (hostLink === link) opts.onHostName(peerName);
 				}
 				break;
 			}
@@ -475,41 +646,62 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			// would name whoever the mesh happened to link us to and silently omit
 			// the rest.
 			case 'rename': {
-				updatePeer(link.peerId, { name: msg.name });
+				const peerName = nameFrom(link.peerId, msg.name, fromHost ? 'host' : 'guest');
+				updatePeer(link.peerId, { name: peerName });
 				const claim = hostClaims.get(link.peerId);
-				if (claim) claim.name = msg.name;
-				if (fromHost) opts.onHostName(msg.name);
+				if (claim) claim.name = peerName;
+				if (fromHost) opts.onHostName(peerName);
 				break;
 			}
 
 			case 'ready':
-				if (fromHost) queuePlayback(msg.mpd, msg.duration, msg.title);
+				if (!fromHost) break;
+				if (typeof msg.film !== 'string' || typeof msg.mpd !== 'string') break;
+				queuePlayback(
+					msg.film,
+					msg.mpd,
+					Number.isFinite(msg.duration) ? msg.duration : 0,
+					remoteTitle(msg.title)
+				);
 				break;
 
 			case 'unplayable':
-				if (fromHost) opts.onUnplayable(msg.reason);
+				if (fromHost && isFault(msg.fault)) opts.onUnplayable(msg.fault);
+				break;
+
+			case 'switchFailed':
+				if (fromHost && isFault(msg.fault)) opts.onSwitchFailed(remoteTitle(msg.title), msg.fault);
 				break;
 
 			case 'state':
 				if (fromHost) sync.apply(msg);
 				break;
 
-			case 'rungs':
+			case 'rungs': {
 				if (!fromHost) break;
-				stats.availableRungs = msg.available;
-				if (player && loadedMpd) configurePlayer(player, { availableRungs: msg.available });
+				const available = Array.isArray(msg.available)
+					? msg.available.filter((r): r is number => Number.isInteger(r) && r >= 0)
+					: [];
+				stats.availableRungs = available;
+				if (player && loadedFilmId) configurePlayer(player, { availableRungs: available });
 				break;
+			}
 
 			case 'waiting':
-				if (fromHost) opts.onWaiting(msg.on, msg.you === true);
+				if (fromHost) opts.onWaiting(nameArray(msg.on), msg.you === true);
 				break;
 
 			case 'roster':
-				if (fromHost) opts.onCompany({ host: msg.host, guests: msg.guests });
+				if (fromHost)
+					opts.onCompany({
+						host: nameFrom(link.peerId, msg.host, 'host'),
+						guests: nameArray(msg.guests)
+					});
 				break;
 
 			case 'paused':
-				if (fromHost) opts.onPaused(msg.by ?? null, msg.you === true);
+				if (fromHost)
+					opts.onPaused(msg.by === null ? null : remoteName(msg.by, ''), msg.you === true);
 				break;
 
 			case 'pong':
@@ -545,7 +737,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			case 'segReq': {
 				// Another guest pulling from our cache (PLAN.md Phase 5). Serving
 				// is the same code path as the host's, minus the origin.
-				const bytes = mesh?.serve(link.peerId, msg.repId, msg.track, msg.segIdx) ?? null;
+				const bytes = mesh?.serve(link.peerId, msg.film, msg.repId, msg.track, msg.segIdx) ?? null;
 				// Nothing to report either way it fails: a cancel means the peer has
 				// stopped waiting, and a link that died mid-send has nobody on it.
 				if (bytes) link.channels.sendSegment(msg.reqId, bytes).catch(() => {});
@@ -614,8 +806,15 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 
 	net.onError((err) => opts.onError(err));
 
+	// Rendezvous resolved on a peer, and a host that is there says hello within
+	// a round trip. If none has by now, the room has people and no host, and
+	// the screen should say that rather than "looking for the room" forever.
+	const hostHelloTimer = setTimeout(() => {
+		if (!closed && hostLink === null) opts.onNoHost();
+	}, HOST_HELLO_MS);
+
 	const statusTimer = setInterval(() => {
-		if (!hostLink || !player) return;
+		if (!hostLink || !player || loadedFilmId === null) return;
 		const bufferedAhead = playerBufferAhead(player, opts.video);
 		const rung = currentRung(player);
 		stats.bufferedAhead = bufferedAhead;
@@ -653,16 +852,33 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			hostLink?.channels.sendControl({ t: 'rename', name: n });
 		},
 		close: () => {
+			closed = true;
 			clearInterval(statusTimer);
+			clearTimeout(hostHelloTimer);
+			opts.video.removeEventListener('waiting', onStall);
 			sync.stop();
 			clock.stop();
 			unregisterSyncStreamScheme();
 			mesh?.close();
+			mesh = null;
 			void player?.destroy();
+			player = null;
 			net.close();
 			void session.leave();
-			for (const [, p] of pending) p.reject(new Error('room closed'));
-			pending.clear();
+			// Through `settle`, so each request's watchdog interval goes with it.
+			for (const reqId of [...pending.keys()])
+				settle(reqId, (p) => p.reject(new Error('room closed')));
 		}
 	};
+}
+
+/** A film title off the wire, bounded like a name is (film.ts TITLE_MAX is the sender's bound). */
+function remoteTitle(raw: unknown): string {
+	return typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+}
+
+/** A list of names off the wire: only strings, each through `remoteName`, none empty. */
+function nameArray(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	return raw.map((n) => remoteName(n, '')).filter((n) => n !== '');
 }

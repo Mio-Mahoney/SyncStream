@@ -18,6 +18,78 @@ export const INIT_SEGMENT = -1;
 export type Role = 'host' | 'guest';
 
 /**
+ * Why something the room was asked for cannot happen, said so a screen can
+ * act on it rather than merely quote it.
+ *
+ * Every failure that reaches a person used to travel as prose: the probe's
+ * sentence, Shaka's "error 4032", a thrown message. Prose cannot be branched
+ * on, so each screen that showed one grew its own ad hoc wording, and a test
+ * could only match substrings. The code is the stable part - what the UI picks
+ * its advice by and what a test asserts - and the sentences hang off it.
+ *
+ * `detail` is written for the person who owns the thing that failed (the host
+ * for a file, the guest for a browser), and `remedy` is what they can do,
+ * which may be nothing. Every screen that renders one goes through
+ * FaultNotice, so the shape is rendered once.
+ */
+export type FaultCode =
+	/** Not an MP4 the origin can index: another container, or an already-fragmented one. */
+	| 'container'
+	/** An MP4 with no usable index: truncated or damaged. */
+	| 'damaged'
+	/** A track's codec cannot be decoded on the host, so it cannot be served. */
+	| 'codec'
+	/** Keyframes too far apart to cut a seekable segment grid. */
+	| 'keyframes'
+	/** No audio and no video track at all. */
+	| 'empty'
+	/** The host's browser lacks something the pipeline needs (MSE, WebCodecs). */
+	| 'browser'
+	/** The file needs converting and the encoder could not start. */
+	| 'encoder'
+	/** The picker's own refusals: a folder, several files, a non-video. */
+	| 'not-video'
+	/** This browser cannot play the stream the host is serving. */
+	| 'unsupported-here'
+	| 'unknown';
+
+export type Fault = {
+	code: FaultCode;
+	/** One sentence naming the cause. */
+	detail: string;
+	/** What the reader can do about it, when there is something. */
+	remedy?: string;
+};
+
+/** An Error that carries a Fault, so a catch can render it rather than quote it. */
+export class FaultError extends Error {
+	readonly fault: Fault;
+	constructor(fault: Fault) {
+		super(fault.detail);
+		this.name = 'FaultError';
+		this.fault = fault;
+	}
+}
+
+/** Any thrown thing as a Fault, so a catch never has to guess the shape. */
+export function faultOf(err: unknown, code: FaultCode = 'unknown'): Fault {
+	if (err instanceof FaultError) return err.fault;
+	const detail = err instanceof Error ? err.message : String(err);
+	return { code, detail };
+}
+
+/** Runtime check for a Fault off the wire. A peer's message is typed, not trusted. */
+export function isFault(x: unknown): x is Fault {
+	if (typeof x !== 'object' || x === null) return false;
+	const f = x as Record<string, unknown>;
+	return (
+		typeof f.code === 'string' &&
+		typeof f.detail === 'string' &&
+		(f.remedy === undefined || typeof f.remedy === 'string')
+	);
+}
+
+/**
  * First message on every control channel. Establishes which peer is the host,
  * which is also how a would-be host detects that a room code is already
  * occupied (PLAN.md 4.7).
@@ -49,10 +121,49 @@ export type Rename = { t: 'rename'; name: string };
  * than in a message of its own because the name and the film arrive together and
  * stop being true together - a second film supersedes both at once.
  */
-export type Ready = { t: 'ready'; mpd: string; duration: number; title: string };
+export type Ready = {
+	t: 'ready';
+	mpd: string;
+	duration: number;
+	title: string;
+	/**
+	 * Which film this is, as the host names it: a fresh random id per `setFile`.
+	 *
+	 * Segment keys are `repId/track/segIdx`, which is content-addressing by
+	 * convention and not by digest, and the convention breaks the moment the host
+	 * puts on a second film: segment 3 of the new film and segment 3 of the old
+	 * share a key, and a guest's cache or the host's tracker will serve one for
+	 * the other. The id is what tells them apart. It rides every segment request
+	 * and every cache announcement, and anything stamped with a film that is not
+	 * the one on is ignored. A guest also dedupes a repeated `ready` by it: the
+	 * host re-sends `ready` for the film already playing, and the manifest text
+	 * alone cannot tell a repeat from a renamed copy of the same file.
+	 */
+	film: string;
+};
 
 /** Host cannot serve this file at all (PLAN.md 4.3 tier 3), with a real reason. */
-export type Unplayable = { t: 'unplayable'; reason: string };
+export type Unplayable = { t: 'unplayable'; fault: Fault };
+
+/**
+ * The host tried to change the film and could not build the new one. The film
+ * already on keeps playing everywhere, which is why this is its own message and
+ * not `unplayable`: a guest mid-film has a player on screen and the rejection
+ * must not read as that film failing.
+ */
+export type SwitchFailed = { t: 'switchFailed'; title: string; fault: Fault };
+
+/**
+ * This guest's player could not load the film at all, so it will send no
+ * `status` for it and must not be waited on.
+ *
+ * Without this a guest whose browser cannot play the stream kept reporting an
+ * empty buffer, the readiness barrier held the whole room for it, and every
+ * other screen read "Waiting for Sam to catch up" about a stall no connection
+ * could end. The host removes the sender from the barrier and says what is
+ * actually wrong, by name.
+ */
+export type CannotPlay = { t: 'cannotPlay'; film: string; fault: Fault };
 
 export type SegReq = {
 	t: 'segReq';
@@ -61,6 +172,8 @@ export type SegReq = {
 	track: Track;
 	/** INIT_SEGMENT for the init segment. */
 	segIdx: number;
+	/** The film this key belongs to (see `Ready.film`). */
+	film: string;
 };
 
 /** Payload rides the data channel as SegData frames keyed by reqId. */
@@ -167,8 +280,8 @@ export type Roster = { t: 'roster'; host: string; guests: string[] };
 export type Rungs = { t: 'rungs'; available: number[] };
 
 /** Phase 5 mesh. A guest announces newly cached segments to the host tracker. */
-export type Have = { t: 'have'; keys: string[] };
-export type SourcesReq = { t: 'sourcesReq'; reqId: number; keys: string[] };
+export type Have = { t: 'have'; film: string; keys: string[] };
+export type SourcesReq = { t: 'sourcesReq'; reqId: number; film: string; keys: string[] };
 export type SourcesRes = { t: 'sourcesRes'; reqId: number; sources: Record<string, string[]> };
 
 /**
@@ -206,6 +319,8 @@ export type ControlMessage =
 	| Rename
 	| Ready
 	| Unplayable
+	| SwitchFailed
+	| CannotPlay
 	| SegReq
 	| SegErr
 	| SegCancel

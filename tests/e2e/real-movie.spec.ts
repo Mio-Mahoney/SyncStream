@@ -26,7 +26,7 @@ test.describe(() => {
 	test.setTimeout(300_000);
 
 	test('a real movie is classified honestly and plays end to end', async ({ page, context }) => {
-		const { code } = await openHost(page, 'real-movie.mp4');
+		const { code, secret } = await openHost(page, 'real-movie.mp4');
 
 		// Whatever tier the probe picks, it must pick one and it must not be
 		// reject: a mainstream film off a shelf is the product's whole reason to
@@ -39,7 +39,7 @@ test.describe(() => {
 		);
 		expect(probed.tier, 'a real mainstream film must never be rejected').not.toBe('reject');
 
-		const { page: guest } = await openGuest(context, code);
+		const { page: guest } = await openGuest(context, { code, secret });
 		await until(
 			() => snapshot(guest),
 			(s) => s.ttff !== null,

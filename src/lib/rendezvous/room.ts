@@ -84,14 +84,40 @@ export class RendezvousError extends Error {
  * not run (PLAN.md 9).
  */
 export class UnreachableError extends RendezvousError {
-	constructor(message: string, attempts: readonly string[] = []) {
+	/** See `UnreachableCause`. */
+	readonly cause: UnreachableCause;
+
+	constructor(message: string, cause: UnreachableCause, attempts: readonly string[] = []) {
 		super(message, attempts);
 		this.name = 'UnreachableError';
+		this.cause = cause;
 	}
 }
 
+/**
+ * What was actually observed when a found peer could not be connected to.
+ *
+ * - `ice-failed`: the connection itself reported failure. ICE tried every
+ *   candidate pair and none worked, which is what a NAT STUN cannot traverse
+ *   looks like - the PLAN.md 9 "would have needed TURN" case, and the only one
+ *   that should be counted as such.
+ * - `timeout`: nothing opened inside the deadline, and nothing said why. A
+ *   strict NAT often leaves ICE in `checking` forever rather than failing, so
+ *   this is usually the same thing - but it is also what a host that closed
+ *   its tab after its offer went out looks like, and a verdict that names the
+ *   networks for that would send someone to switch networks over a host who
+ *   simply left.
+ */
+export type UnreachableCause = 'ice-failed' | 'timeout';
+
 /** Why `awaitFirstPeer` gave up on a peer it had already found. */
-class PeerUnreachable extends Error {}
+class PeerUnreachable extends Error {
+	readonly cause: UnreachableCause;
+	constructor(message: string, cause: UnreachableCause) {
+		super(message);
+		this.cause = cause;
+	}
+}
 
 export type HostRendezvous = {
 	/** Every strategy that confirmed, in priority order. */
@@ -156,17 +182,18 @@ function link(controller: AbortController, signal: AbortSignal | undefined): () 
  * host must survive a reload, and a strategy that lived in navigation state
  * would silently revert to the public ladder on refresh.
  */
-async function hostRoom(opts?: {
+async function hostRoom(opts: {
 	signal?: AbortSignal;
 	code?: string;
+	secret: string;
 	strategy?: StrategyName;
 }): Promise<HostRendezvous> {
-	const ladder = strategyLadder(opts?.strategy);
+	const ladder = strategyLadder(opts.strategy);
 	if (ladder.length === 0) {
 		throw new RendezvousError('rendezvous: no signaling strategy is configured');
 	}
 
-	const code = opts?.code ?? generateRoomCode();
+	const code = opts.code ?? generateRoomCode();
 	const stragglers = new AbortController();
 	const unlink = link(stragglers, opts?.signal);
 
@@ -182,7 +209,7 @@ async function hostRoom(opts?: {
 	try {
 		results = await Promise.allSettled(
 			ladder.map((t) =>
-				t.join(code, { signal: stragglers.signal }).then((session) => {
+				t.join(code, { signal: stragglers.signal, secret: opts.secret }).then((session) => {
 					startGrace();
 					return session;
 				})
@@ -204,7 +231,7 @@ async function hostRoom(opts?: {
 	// A caller-driven abort is not a rendezvous failure; report it as itself
 	// rather than as "every strategy failed", but do not leak the sessions that
 	// did connect before the abort landed.
-	if (opts?.signal?.aborted) {
+	if (opts.signal?.aborted) {
 		await Promise.allSettled(sessions.map((s) => s.leave()));
 		opts.signal.throwIfAborted();
 	}
@@ -246,18 +273,18 @@ async function hostRoom(opts?: {
 export async function hostRoomChecked(
 	isOccupied: (r: HostRendezvous) => Promise<boolean>,
 	maxAttempts = 3,
-	opts?: { signal?: AbortSignal; code?: string; strategy?: StrategyName }
+	opts: { signal?: AbortSignal; code?: string; secret: string; strategy?: StrategyName }
 ): Promise<HostRendezvous> {
 	const tried: string[] = [];
 
 	for (let attempt = 0; attempt < maxAttempts; attempt++) {
-		opts?.signal?.throwIfAborted();
+		opts.signal?.throwIfAborted();
 		// Only the first attempt honours the caller's code. A collision means
 		// that exact code is taken, so retrying it would just collide again.
-		// The strategy survives the retry: a collision changes which code we
-		// announce, never where.
+		// The strategy and key survive the retry: a collision changes which code
+		// we announce, never where or under which key.
 		const rendezvous = await hostRoom(
-			attempt === 0 ? opts : { signal: opts?.signal, strategy: opts?.strategy }
+			attempt === 0 ? opts : { signal: opts.signal, secret: opts.secret, strategy: opts.strategy }
 		);
 
 		let occupied: boolean;
@@ -341,7 +368,8 @@ function awaitFirstPeer(
 						finish(() =>
 							reject(
 								new PeerUnreachable(
-									`found the room, but no connection opened within ${PEER_CONNECT_DEADLINE_MS}ms`
+									`found the room, but no connection opened within ${PEER_CONNECT_DEADLINE_MS}ms`,
+									'timeout'
 								)
 							)
 						),
@@ -358,7 +386,9 @@ function awaitFirstPeer(
 			// a handshake away, which is what `opened` is counting.
 			if (e === 'failed' && negotiating <= 0 && opened === 0) {
 				finish(() =>
-					reject(new PeerUnreachable('found the room, but the connection to it failed'))
+					reject(
+						new PeerUnreachable('found the room, but the connection to it failed', 'ice-failed')
+					)
 				);
 			}
 		});
@@ -386,6 +416,7 @@ function awaitFirstPeer(
  */
 export async function joinRoomByCode(
 	code: string,
+	secret: string,
 	preferred?: StrategyName,
 	opts?: { signal?: AbortSignal }
 ): Promise<RendezvousSession> {
@@ -417,7 +448,7 @@ export async function joinRoomByCode(
 
 		let session: RendezvousSession | null = null;
 		try {
-			session = await transport.join(code, { signal: budget.signal });
+			session = await transport.join(code, { signal: budget.signal, secret });
 			clearTimeout(timer);
 			// Whatever is left of the budget goes to finding the host.
 			await awaitFirstPeer(session, Math.max(0, deadline - Date.now()), opts?.signal);
@@ -432,6 +463,7 @@ export async function joinRoomByCode(
 			if (err instanceof PeerUnreachable) {
 				throw new UnreachableError(
 					`rendezvous: room ${code} was found but could not be connected to`,
+					err.cause,
 					attempts
 				);
 			}

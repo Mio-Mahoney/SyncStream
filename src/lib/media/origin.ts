@@ -72,7 +72,12 @@ export async function createOrigin(file: File, probe: ProbeResult): Promise<Orig
 		);
 
 	const videoReps = source.videoIndex ? reps('video') : [];
-	const audioReps = source.audioIndex ? reps('audio') : [];
+	// One audio representation, not one per ladder row: PLAN.md 4.4 never
+	// re-encodes audio for bitrate, and `representation()` answers NATIVE_REP
+	// for every audio id, so mapping LADDER here emitted four identical
+	// `<Representation id="0">` elements.
+	const nativeAudio = source.audioIndex ? ladder.representation(NATIVE_REP, 'audio') : null;
+	const audioReps = nativeAudio ? [nativeAudio] : [];
 
 	const input: ManifestInput = {
 		durationSec: source.durationSec,
@@ -104,6 +109,9 @@ export async function createOrigin(file: File, probe: ProbeResult): Promise<Orig
 			ladder.note(repId, track, segIdx);
 			return ladder.getSegment(repId, track, segIdx);
 		},
+		release: (repId, track, segIdx) => ladder.release(repId, track, segIdx),
+		segmentCount: (track) =>
+			(track === 'video' ? source.videoIndex : source.audioIndex)?.segments.length ?? 0,
 		availableRungs: () => ladder.availableRungs(),
 		onRungsChanged: (cb) => {
 			ladder.onRungsChanged(cb);

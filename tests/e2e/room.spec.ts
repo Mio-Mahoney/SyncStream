@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import {
 	fixture,
 	inviteLink,
+	landedSeek,
 	openGuest,
 	openHost,
 	openRoom,
@@ -21,9 +22,9 @@ import { BASE } from './base';
  * produces the real thing for the full-scale run.
  */
 test('a guest joins and plays the host local file, in sync', async ({ page, context }) => {
-	const { code, errors: hostErrors } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret, errors: hostErrors } = await openHost(page, 'tiny-60s.mp4');
 
-	const { page: guest, errors: guestErrors } = await openGuest(context, code);
+	const { page: guest, errors: guestErrors } = await openGuest(context, { code, secret });
 
 	// The guest must reach a first frame without the host uploading the file.
 	const ready = await until(
@@ -89,12 +90,15 @@ test('the link the host copies is the link a guest can actually open', async ({
 	context
 }) => {
 	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 
 	const link = await inviteLink(page);
 	const url = new URL(link);
 
 	expect(url.pathname, 'the invite link must carry the app base path').toBe(`${BASE}/room/${code}`);
+	// The key is what lets the holder in, and the fragment is the one part of a
+	// URL a browser never sends to the server hosting the page.
+	expect(url.hash, 'the invite link carries the room key in its fragment').toBe(`#k=${secret}`);
 	// PLAN.md 4.6: the link names the strategy that actually carried the room, so
 	// the guest tries the one the host is on first rather than walking the ladder.
 	expect(url.searchParams.get('s'), 'the link names the rendezvous strategy').toBeTruthy();
@@ -113,8 +117,8 @@ test('the link the host copies is the link a guest can actually open', async ({
 });
 
 test('a guest seek resolves quickly and both sides land together', async ({ page, context }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,
@@ -131,20 +135,11 @@ test('a guest seek resolves quickly and both sides land together', async ({ page
 		{ what: 'playback to start' }
 	);
 
-	// A guest sends intent; the host decides and broadcasts (PLAN.md 4.9).
-	const started = Date.now();
-	await guest.getByTestId('seek').fill('40');
-	await guest.getByTestId('seek').dispatchEvent('change');
-
-	await until(
-		() => videoTime(guest),
-		(t) => t > 38 && t < 50,
-		{
-			what: 'the guest to land on the seek target',
-			timeout: 20_000
-		}
-	);
-	expect(Date.now() - started, 'seek latency').toBeLessThan(10_000);
+	// A guest sends intent; the host decides and broadcasts (PLAN.md 4.9). The
+	// clock stops on a landed frame, not on the playhead being assigned, and
+	// the bound is PLAN.md Phase 2's own.
+	const seekMs = await landedSeek(guest, 40);
+	expect(seekMs, 'a landed seek, as PLAN.md Phase 2 states it').toBeLessThan(2000);
 
 	// The host followed its own guest's intent, which is the authority model working.
 	await until(
@@ -169,8 +164,8 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 	page,
 	context
 }) => {
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,
@@ -221,6 +216,10 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 	await expect(page.getByTestId('waiting')).toHaveText(
 		new RegExp(`Waiting for ${guestName} to catch up`)
 	);
+	// Where the guest stood when the room stopped for it. Recovery below is
+	// measured as movement past here: "videoTime > 0.5" was already true from
+	// the seek to 45 and proved nothing about resuming (REVIEW T-04).
+	const stoodAt = await videoTime(guest);
 
 	// The guest's half. "Waiting for Guest 412" is the one sentence Guest 412
 	// cannot act on, because nothing ever told them that is their name -- so the
@@ -246,8 +245,13 @@ test('a throttled guest trips the readiness barrier, and lifting it recovers', a
 	);
 	await until(
 		() => videoTime(guest),
-		(t) => t > 0.5,
-		{ what: 'the guest to resume playing' }
+		(t) => t > stoodAt + 1,
+		{ what: 'the guest to resume and advance past where it was held', timeout: 30_000 }
+	);
+	await until(
+		() => snapshot(guest),
+		(s) => s.playing && Math.abs(s.drift) < 0.5,
+		{ what: 'the resumed guest to be back in sync', timeout: 30_000 }
 	);
 	// Both notices clear. A banner telling a guest they are behind, left up over a
 	// film that is playing again, is the shape of bug iteration 8 found on the
@@ -276,8 +280,8 @@ test('a guest loading the opening is not told their connection fell behind', asy
 	page,
 	context
 }) => {
-	const { code } = await openRoom(page);
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(page),
 		(s) => s.peers.length === 1,
@@ -512,7 +516,7 @@ test('every player control is reachable on a phone', async ({ page }) => {
  */
 test('the room fits a laptop window with the film playing', async ({ page, context }) => {
 	await page.setViewportSize({ width: 1280, height: 720 });
-	const { code } = await openHost(page, 'tiny-60s.mp4');
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 	await expect(page.getByTestId('change-video')).toBeVisible({ timeout: 45_000 });
 
 	const height = (p: Page, testid: string) =>
@@ -541,7 +545,7 @@ test('the room fits a laptop window with the film playing', async ({ page, conte
 	// The guest's half of the same fold. Their line is shorter than the host's
 	// bar, so the film keeps more of its height here - which is the point of
 	// sizing against the bar rather than against a number.
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await guest.setViewportSize({ width: 1280, height: 720 });
 	await until(
 		() =>
@@ -581,8 +585,8 @@ test('the room fits a laptop window with the film playing', async ({ page, conte
  * the file, so the barrier holds long enough to assert against.
  */
 test('the barrier notice reaches a guest watching fullscreen', async ({ page, context }) => {
-	const { code } = await openRoom(page);
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openRoom(page);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(page),
 		(s) => s.peers.length === 1,

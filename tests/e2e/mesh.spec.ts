@@ -72,7 +72,7 @@ async function openRoomOfFour(
 	page: Page,
 	browser: { newContext(): Promise<BrowserContext> }
 ): Promise<{ guests: Page[]; contexts: BrowserContext[] }> {
-	const { code } = await openHost(page, 'large-2gb.mp4');
+	const { code, secret } = await openHost(page, 'large-2gb.mp4');
 	// Capped before anyone joins: the claim is about a 12 Mbps uplink, not
 	// about a mesh warmed through a fat pipe.
 	await throttle(page, HOST_UPLINK_BPS);
@@ -82,7 +82,7 @@ async function openRoomOfFour(
 	for (let i = 0; i < GUESTS; i++) {
 		const ctx = await browser.newContext();
 		contexts.push(ctx);
-		const { page: guest } = await openGuest(ctx, code);
+		const { page: guest } = await openGuest(ctx, { code, secret });
 		guests.push(guest);
 		// Staggered joins, as real guests are: a simultaneous four-way
 		// rendezvous stampede tests the relay, not the mesh.

@@ -8,7 +8,7 @@
  * split across four files is an invariant nobody maintains.
  */
 
-import type { Track } from '$lib/protocol/control';
+import type { Fault, FaultCode, Track } from '$lib/protocol/control';
 
 /** PLAN.md 4.3: probe and tier, not fail-loudly. */
 export type Tier = 'direct' | 'transcode' | 'reject';
@@ -70,6 +70,13 @@ export type ProbeResult = {
 	tier: Tier;
 	/** Human-readable and specific. Names the actual cause, never "unsupported". */
 	reason: string;
+	/**
+	 * The cause, as a code a screen can branch on. 'unknown' is never a
+	 * rejection's code; for a playable file it is simply unused.
+	 */
+	code: FaultCode;
+	/** What the host can do about a rejection, when there is something. */
+	remedy?: string;
 	video: VideoTrackInfo | null;
 	audio: AudioTrackInfo | null;
 	videoAction: TrackAction;
@@ -105,6 +112,13 @@ export const LADDER: readonly Rung[] = [
 ];
 
 export const NATIVE_REP = 0;
+
+/** A rejected probe as the Fault every screen renders it through. */
+export function probeFault(p: ProbeResult): Fault {
+	return p.remedy
+		? { code: p.code, detail: p.reason, remedy: p.remedy }
+		: { code: p.code, detail: p.reason };
+}
 
 /** One segment's placement on the timeline, in `timescale` units. */
 export type SegmentEntry = {
@@ -182,6 +196,18 @@ export type Origin = {
 
 	getInit(repId: number, track: Track): Promise<Uint8Array>;
 	getSegment(repId: number, track: Track, segIdx: number): Promise<Uint8Array>;
+	/**
+	 * The caller of a `getSegment` no longer wants it. Drops an encode job
+	 * nobody else is waiting on before it starts (see Ladder.release); nothing
+	 * else to undo for a passthrough slice.
+	 */
+	release(repId: number, track: Track, segIdx: number): void;
+	/**
+	 * How many segments the track's grid holds, so a request can be checked
+	 * against the exact index rather than a duration-derived guess. Every rep
+	 * of a track shares the grid (the CMAF invariant), so this is per track.
+	 */
+	segmentCount(track: Track): number;
 
 	/**
 	 * Rungs currently safe to advertise. A rung appears here only once its

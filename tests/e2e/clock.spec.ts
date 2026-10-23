@@ -24,8 +24,8 @@ test("a host whose wall clock has drifted does not drag its guests' playheads", 
 		Date.now = () => real() + 60_000;
 	});
 
-	const { code } = await openHost(page, 'tiny-60s.mp4');
-	const { page: guest } = await openGuest(context, code);
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,

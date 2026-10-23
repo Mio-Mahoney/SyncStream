@@ -77,6 +77,12 @@ export type RendezvousSession = {
 export type JoinOptions = {
 	/** Aborts a join that is taking too long, so the ladder can fall through. */
 	signal?: AbortSignal;
+	/**
+	 * The room's key (codes.ts). The rendezvous library derives the AES key for
+	 * every offer and answer from it, so a peer without it cannot complete a
+	 * handshake with anyone in the room however well it knows the code.
+	 */
+	secret: string;
 };
 
 export type SignalingTransport = {

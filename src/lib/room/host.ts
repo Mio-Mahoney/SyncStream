@@ -13,10 +13,20 @@ import { fallbackName, remoteName } from '$lib/identity';
 import { createOrigin } from '$lib/media/origin';
 import { configureHostPlayer, createPlayer, describePlaybackError } from '$lib/media/shaka/config';
 import { registerSyncStreamScheme, unregisterSyncStreamScheme } from '$lib/media/shaka/scheme';
-import { probeFile, tierMessage } from '$lib/media/probe';
-import type { Origin, ProbeResult } from '$lib/media/types';
+import { probeFile } from '$lib/media/probe';
+import { LADDER, probeFault, type Origin, type ProbeResult } from '$lib/media/types';
 import { createMesh, type Mesh } from '$lib/mesh/mesh';
-import { INIT_SEGMENT, type ControlMessage, type Intent } from '$lib/protocol/control';
+import {
+	FaultError,
+	INIT_SEGMENT,
+	faultOf,
+	isFault,
+	type ControlMessage,
+	type Fault,
+	type Intent,
+	type Track
+} from '$lib/protocol/control';
+import { roomHash } from '$lib/rendezvous/codes';
 import { hostRoomChecked, shareLinkQuery, type HostRendezvous } from '$lib/rendezvous/room';
 import type { StrategyName } from '$lib/rendezvous/transport';
 import { createPeerNetwork, type PeerLink, type PeerNetwork } from '$lib/rtc/connection';
@@ -29,6 +39,11 @@ import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
 export type HostRoom = {
 	readonly code: string;
 	readonly shareUrl: string;
+	/**
+	 * Put a film on. Rejects with a `FaultError` when the file cannot be served,
+	 * and in that case changes nothing: a film already playing keeps playing, on
+	 * every screen, and every screen is told why the switch did not happen.
+	 */
 	setFile(file: File): Promise<ProbeResult>;
 	/**
 	 * Say who is hosting. `name` was only ever a fallback ("Host"), and the room
@@ -60,6 +75,8 @@ export type HostRoomOptions = {
 	 * follow it.
 	 */
 	code: string;
+	/** The room's key (codes.ts), which only the invite link carries. */
+	secret: string;
 	/**
 	 * The `?s=` strategy from the room URL, if it carried one. 'local' pins the
 	 * announce to the localhost relay (the hermetic test path); anything else
@@ -72,6 +89,19 @@ export type HostRoomOptions = {
 	 */
 	onSource: (o: { title: string }) => void;
 	onError: (err: Error) => void;
+	/**
+	 * A second film could not be built, and the first is still on. The host's
+	 * own picker shows the fault; this is so the page can also note it beside
+	 * the film that stayed.
+	 */
+	onSwitchFailed: (title: string, fault: Fault) => void;
+	/**
+	 * A guest's player could not load the film at all (`CannotPlay`), by name,
+	 * with what its browser said - or null once that guest is playing again.
+	 * The barrier has already let go of them; this is so the host can see why
+	 * one friend is not watching.
+	 */
+	onCannotPlay: (guest: { peerId: string; name: string }, fault: Fault | null) => void;
 	onGuests: (guests: { peerId: string; name: string }[]) => void;
 	onWaiting: (on: string[]) => void;
 	/** Who stopped the film, by name, and whether that was us. Null once it runs again. */
@@ -79,7 +109,29 @@ export type HostRoomOptions = {
 	signal?: AbortSignal;
 };
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Resolves after `ms`, or rejects at once if `signal` fires first. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+	new Promise<void>((resolve, reject) => {
+		if (signal?.aborted) return reject(signal.reason);
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason);
+		};
+		signal?.addEventListener('abort', onAbort, { once: true });
+	});
+
+/**
+ * Segment requests one guest may have open at once before the rest are
+ * refused. Shaka keeps a handful in flight (video and audio, plus a retry) and
+ * the prefetcher adds one, so an honest guest never reaches this; a page
+ * holding the invite link and firing requests without awaiting replies would
+ * otherwise have the host read, encode and hold a send buffer for every one.
+ */
+const MAX_IN_FLIGHT_PER_GUEST = 8;
 
 /**
  * One link as the occupancy probe left it: the listener it is still holding,
@@ -134,7 +186,15 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				seen.set(link.peerId, { off: offControl, held });
 				link.channels.sendControl({ t: 'hello', role: 'host', name });
 			});
-			await sleep(OCCUPANCY_PROBE_MS);
+			// Abort-aware, and re-checked after: the page unmounting during this
+			// window used to leave a fully built, announcing room behind with no
+			// handle anyone could close it with.
+			try {
+				await sleep(OCCUPANCY_PROBE_MS, opts.signal);
+			} catch (err) {
+				probe.close();
+				throw err;
+			}
 			if (occupied) {
 				probe.close();
 				return true;
@@ -145,7 +205,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			return false;
 		},
 		3,
-		{ signal: opts.signal, code: opts.code, strategy: opts.strategy }
+		{ signal: opts.signal, code: opts.code, secret: opts.secret, strategy: opts.strategy }
 	);
 
 	const net = network as unknown as PeerNetwork;
@@ -164,7 +224,11 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	 * here when it went on. See film.ts.
 	 */
 	let title = '';
+	/** The film's id (`Ready.film`). Empty until the first file is on. */
+	let film = '';
 	const guestNames = new Map<string, string>();
+	/** Guests whose player refused the current film, so a status from them is news. */
+	const cannotPlay = new Set<string>();
 	/** Latest rung per guest, off `status` - what meshPlan's `rungs` is built from. */
 	const guestRungs = new Map<string, number | null>();
 
@@ -172,6 +236,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		network: net,
 		// We are the origin. There is no upstream to fall back to.
 		hostPeerId: null,
+		film,
 		fetchFromHost: async (repId, track, segIdx) => {
 			if (!origin) throw new Error('host: no file selected yet');
 			return segIdx === INIT_SEGMENT
@@ -336,7 +401,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			t: 'ready',
 			mpd: origin.mpd,
 			duration: origin.durationSec,
-			title
+			title,
+			film
 		});
 		link.channels.sendControl({ t: 'rungs', available: origin.availableRungs() });
 		link.channels.sendControl(state.snapshot());
@@ -359,25 +425,75 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 	/** Requests being read, encoded or sent right now, across every link. */
 	let serving = 0;
+	/**
+	 * What each link has in flight, by its reqId, so a `segCancel` or a
+	 * departure can release the encode job behind it and the per-guest cap
+	 * has something to count.
+	 */
+	const inFlight = new Map<string, Map<number, { repId: number; track: Track; segIdx: number }>>();
+
+	const inFlightOf = (peerId: string) => {
+		let m = inFlight.get(peerId);
+		if (!m) {
+			m = new Map();
+			inFlight.set(peerId, m);
+		}
+		return m;
+	};
+
+	/**
+	 * Whether a request names a segment this origin has. Everything in it came
+	 * off a peer's wire untrusted: `focus` and the lookahead would otherwise
+	 * queue encodes for a segIdx past the film, and a `track` that is not one
+	 * would throw inside the origin.
+	 */
+	const validRequest = (o: Origin, repId: number, track: Track, segIdx: number): boolean => {
+		if (track !== 'video' && track !== 'audio') return false;
+		if (!Number.isInteger(repId) || !LADDER.some((r) => r.id === repId)) return false;
+		if (!Number.isInteger(segIdx)) return false;
+		if (segIdx === INIT_SEGMENT) return true;
+		return segIdx >= 0 && segIdx < o.segmentCount(track);
+	};
 
 	const serveSegment = async (link: PeerLink, msg: Extract<ControlMessage, { t: 'segReq' }>) => {
 		const { reqId, repId, track, segIdx } = msg;
+		const refuse = (reason: string) => link.channels.sendControl({ t: 'segErr', reqId, reason });
+		const o = origin;
+		if (!o) return refuse('the host has not picked a file yet');
+		// A request for a film that is no longer on. Its key names the new
+		// film's bytes now, and answering would hand this guest the wrong ones.
+		if (msg.film !== film) return refuse('that film is no longer playing');
+		if (!validRequest(o, repId, track, segIdx)) return refuse('no such segment');
+		const mine = inFlightOf(link.peerId);
+		if (mine.size >= MAX_IN_FLIGHT_PER_GUEST) return refuse('too many requests in flight');
+
+		mine.set(reqId, { repId, track, segIdx });
 		stats.segmentQueue = ++serving;
 		try {
-			if (!origin) throw new Error('the host has not picked a file yet');
 			const bytes =
 				segIdx === INIT_SEGMENT
-					? await origin.getInit(repId, track)
-					: await origin.getSegment(repId, track, segIdx);
+					? await o.getInit(repId, track)
+					: await o.getSegment(repId, track, segIdx);
 			await link.channels.sendSegment(reqId, bytes);
 		} catch (err) {
 			// The guest cancelled it (a seek away). It is no longer waiting on a
 			// reply, so there is nobody to send an error to.
 			if ((err as Error).name === 'AbortError') return;
-			link.channels.sendControl({ t: 'segErr', reqId, reason: (err as Error).message });
+			refuse((err as Error).message);
 		} finally {
 			stats.segmentQueue = --serving;
+			if (mine.delete(reqId) && segIdx !== INIT_SEGMENT) o.release(repId, track, segIdx);
 		}
+	};
+
+	/** The guest no longer wants `reqId`: stop the send and let go of the encode. */
+	const releaseRequest = (link: PeerLink, reqId: number) => {
+		link.channels.cancelOutbound(reqId);
+		const mine = inFlight.get(link.peerId);
+		const req = mine?.get(reqId);
+		if (!mine || !req) return;
+		mine.delete(reqId);
+		if (req.segIdx !== INIT_SEGMENT) origin?.release(req.repId, req.track, req.segIdx);
 	};
 
 	/**
@@ -447,8 +563,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			case 'segCancel':
 				// A seek abandons everything in flight (PLAN.md Phase 2). Our uplink
 				// is the room's one constrained resource, and finishing those sends
-				// would spend it ahead of the segment the guest is now waiting on.
-				link.channels.cancelOutbound(msg.reqId);
+				// would spend it ahead of the segment the guest is now waiting on -
+				// and so would the encoder, on a rung segment nobody will play.
+				releaseRequest(link, msg.reqId);
 				break;
 
 			case 'ping':
@@ -472,11 +589,22 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 				// room that a stalled guest's own status message gets to write.
 				const guestName = nameFrom(link.peerId, msg.name);
 				guestNames.set(link.peerId, guestName);
+				// A guest whose player had refused the film is reporting a buffer
+				// again: it loaded after all (a later film, a retry), and the note
+				// about it comes down.
+				if (cannotPlay.delete(link.peerId)) {
+					updatePeer(link.peerId, { cannotPlay: false });
+					opts.onCannotPlay({ peerId: link.peerId, name: guestName }, null);
+				}
 				updatePeer(link.peerId, {
 					bufferedAhead: msg.bufferedAhead,
 					atEnd,
 					rung: msg.rung,
-					throughputBps: msg.throughput
+					throughputBps: msg.throughput,
+					// Re-read each tick: the type is resolved asynchronously after the
+					// link is announced (connection.ts), so the value copied at
+					// announcement is usually still 'unknown'.
+					candidateType: link.candidateType
 				});
 				barrier.report(link.peerId, guestName, msg.bufferedAhead, atEnd);
 				// A rung change changes what the mesh plan asks owners to cover.
@@ -488,16 +616,32 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			}
 
 			case 'have':
-				mesh.handleHave(link.peerId, msg.keys);
+				mesh.handleHave(link.peerId, msg.film, msg.keys);
 				break;
 
 			case 'sourcesReq':
 				link.channels.sendControl({
 					t: 'sourcesRes',
 					reqId: msg.reqId,
-					sources: mesh.sources(msg.keys)
+					sources: mesh.sources(msg.film, msg.keys)
 				});
 				break;
+
+			case 'cannotPlay': {
+				// This guest's player refused the film. It will send no status, so
+				// the barrier must let go of it now rather than hold the room for a
+				// buffer that will never fill - and the host is told what its browser
+				// said, by name, because "Waiting for Sam" was the only account of it.
+				if (msg.film !== film || !isFault(msg.fault)) break;
+				cannotPlay.add(link.peerId);
+				barrier.remove(link.peerId);
+				updatePeer(link.peerId, { cannotPlay: true, bufferedAhead: 0, rung: null });
+				opts.onCannotPlay(
+					{ peerId: link.peerId, name: guestNames.get(link.peerId) ?? fallbackName('guest') },
+					msg.fault
+				);
+				break;
+			}
 
 			default:
 				// A guest sending us `state` would be a guest trying to command the
@@ -529,8 +673,17 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		helloSeen.delete(peerId);
 		guestNames.delete(peerId);
 		guestRungs.delete(peerId);
+		cannotPlay.delete(peerId);
 		barrier.remove(peerId);
 		removePeer(peerId);
+		// Whatever it was waiting on, nobody is now.
+		const mine = inFlight.get(peerId);
+		if (mine) {
+			for (const req of mine.values()) {
+				if (req.segIdx !== INIT_SEGMENT) origin?.release(req.repId, req.track, req.segIdx);
+			}
+			inFlight.delete(peerId);
+		}
 		announceGuests();
 	});
 
@@ -590,32 +743,83 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		}
 	};
 
+	/**
+	 * Put a film on, or refuse to, and never anything in between.
+	 *
+	 * The order is the whole of the fix for the way this used to fail. It once
+	 * closed the old origin and took its own playback down *before* building
+	 * the new one, so a second file that probed fine and then failed inside
+	 * `createOrigin` (an fMP4, a 4K HEVC with no encoder for it) left the room
+	 * with the first film's origin closed, every guest's player erroring out
+	 * on it, the host's element with no source, and a late joiner handed the
+	 * dead origin's manifest under the new file's title. Now the new origin is
+	 * built first; a throw leaves `origin`, `title`, `pausedBy` and our own
+	 * playback exactly as they were, and the room is told the switch did not
+	 * happen. Only once the new origin exists does the old one go.
+	 */
 	const setFile = async (file: File): Promise<ProbeResult> => {
+		const probeStarted = performance.now();
 		const probe = await probeFile(file);
+		stats.timings.probeMs = Math.round(performance.now() - probeStarted);
+		// The verdict on the file just offered, whatever becomes of it: a rejection
+		// is a tier too, and the oracle reads it.
 		stats.tier = probe.tier;
+		const nextTitle = filmTitle(file.name);
 
 		if (probe.tier === 'reject') {
-			const reason = tierMessage(probe, true);
-			net.broadcastControl({ t: 'unplayable', reason });
-			throw new Error(reason);
+			const fault = probeFault(probe);
+			// A guest mid-film has a player on screen; the rejection of a second
+			// file must not read as that film failing. With no film on, it is the
+			// room's whole state and goes out as such.
+			if (origin) net.broadcastControl({ t: 'switchFailed', title: nextTitle, fault });
+			else net.broadcastControl({ t: 'unplayable', fault });
+			if (origin) opts.onSwitchFailed(nextTitle, fault);
+			throw new FaultError(fault);
 		}
 
-		// Past the rejection, so a file we would not play never renames the film
-		// that is on - the same rule `converting` follows on the page, and for the
-		// same reason: a rejected file displaced nothing.
-		title = filmTitle(file.name);
-		// Nobody has paused this film - it has not started. Kept here beside the
-		// title for the same reason: a second film supersedes the first, and an
-		// attribution carried over would explain the new film's stillness with a
-		// decision somebody made about the old one.
-		pausedBy = null;
+		let next: Origin;
+		const originStarted = performance.now();
+		try {
+			next = await createOrigin(file, probe);
+			stats.timings.originMs = Math.round(performance.now() - originStarted);
+		} catch (err) {
+			const fault = faultOf(err, 'encoder');
+			if (origin) {
+				net.broadcastControl({ t: 'switchFailed', title: nextTitle, fault });
+				opts.onSwitchFailed(nextTitle, fault);
+			} else {
+				net.broadcastControl({ t: 'unplayable', fault });
+			}
+			throw new FaultError(fault);
+		}
+		if (closed) {
+			next.close();
+			throw new FaultError({ code: 'unknown', detail: 'The room was closed.' });
+		}
 
-		origin?.close();
-		await stopOwnPlayback();
-		const next = await createOrigin(file, probe);
+		// From here the new film is on. Everything that named the old one
+		// changes together, which is also why `pausedBy` goes: an attribution
+		// carried over would explain the new film's stillness with a decision
+		// somebody made about the old one.
+		const old = origin;
 		origin = next;
+		title = nextTitle;
+		film = crypto.randomUUID();
+		pausedBy = null;
+		cannotPlay.clear();
+		// The tracker's every claim names the old film's bytes.
+		mesh.setFilm(film);
+		for (const [peerId, mine] of inFlight) {
+			// Nobody is served the old film again; their fetches fail over to
+			// requests stamped with the new one.
+			for (const reqId of mine.keys()) net.get(peerId)?.channels.cancelOutbound(reqId);
+			mine.clear();
+		}
+		old?.close();
+		await stopOwnPlayback();
 
 		next.onRungsChanged((available) => {
+			if (origin !== next) return; // a film that has since been replaced
 			stats.availableRungs = available;
 			net.broadcastControl({ t: 'rungs', available });
 		});
@@ -657,7 +861,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		// path. Hand-writing `/room/...` produced a link that is correct only on a
 		// root domain and 404s everywhere else -- and this string is the entire
 		// product: it is what the host sends to the person they want to watch with.
-		shareUrl: `${opts.origin}${resolve('/room/[id]', { id: rendezvous.code })}${shareLinkQuery(rendezvous.primary)}`,
+		// The key goes last, in the fragment: it is what lets the holder in, and
+		// a fragment is the one part of a URL a browser never sends anywhere.
+		shareUrl: `${opts.origin}${resolve('/room/[id]', { id: rendezvous.code })}${shareLinkQuery(rendezvous.primary)}${roomHash(opts.secret)}`,
 		setFile,
 		/**
 		 * Broadcast, not left to the roster. A guest still waiting for a file knows
@@ -683,6 +889,7 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		close: () => {
 			closed = true;
 			state.stop();
+			barrier.stop();
 			mesh.close();
 			net.close();
 			void rendezvous.leave();

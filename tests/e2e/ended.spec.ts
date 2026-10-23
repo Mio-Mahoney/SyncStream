@@ -29,9 +29,9 @@ for (const { file, start } of [
 	test(
 		start === 0 ? `a full watch of ${file} reaches ended` : `a seek to ${start}s reaches ended`,
 		async ({ page, context }, testInfo) => {
-			const { code } = await openHost(page, file);
+			const { code, secret } = await openHost(page, file);
 			await expect(page.getByLabel('Pause when someone falls behind')).toBeChecked();
-			const { page: guest } = await openGuest(context, code);
+			const { page: guest } = await openGuest(context, { code, secret });
 			await until(
 				() => snapshot(page),
 				(s) => s.peers.length === 1 && s.peers[0].bufferedAhead > 5 && s.waitingOn.length === 0,
@@ -66,9 +66,9 @@ test('a real film reaches its ending without a readiness hold', async ({
 		'needs tests/fixtures/real-movie.mp4 (symlink any real film there)'
 	);
 	test.setTimeout(300_000);
-	const { code } = await openHost(page, 'real-movie.mp4');
+	const { code, secret } = await openHost(page, 'real-movie.mp4');
 	await expect(page.getByLabel('Pause when someone falls behind')).toBeChecked();
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(page),
 		(s) => s.peers.length === 1 && s.peers[0].bufferedAhead > 5 && s.waitingOn.length === 0,

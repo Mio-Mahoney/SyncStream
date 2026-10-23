@@ -11,7 +11,10 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:e2e": "playwright test",
-		"fixtures": "bash tests/fixtures/gen.sh"
+		"fixtures": "bash tests/fixtures/gen.sh",
+		"prepare": "svelte-kit sync || echo \"\"",
+		"test:unit": "bun test tests/unit",
+		"test": "bun test tests/unit && playwright test"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.61.1",

@@ -1,12 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { appPath } from './base';
-import { snapshot, until } from './helpers';
-
-/** A code nobody is hosting yet, in the room-code alphabet (no I, O, 0 or 1). */
-function freshCode(): string {
-	const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-	return Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * 32)]).join('');
-}
+import { freshRoom, guestPath, hostPath, snapshot, until } from './helpers';
 
 /**
  * A room spends its first second and a half checking that its code is free
@@ -27,13 +20,13 @@ test('a guest already waiting when the room opens is met, not missed', async ({
 	page,
 	context
 }) => {
-	const code = freshCode();
+	const room = freshRoom();
 
 	const guest = await context.newPage();
-	await guest.goto(appPath(`/room/${code}?debug=1&s=local`));
+	await guest.goto(guestPath(room));
 	await expect(guest.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'searching');
 
-	await page.goto(appPath(`/room/${code}?create=1&debug=1&s=local`));
+	await page.goto(hostPath(room));
 	await expect(page.getByTestId('file-input')).toBeAttached({ timeout: 45_000 });
 
 	await expect(guest.getByTestId('waiting-room')).toHaveAttribute('data-phase', 'found', {

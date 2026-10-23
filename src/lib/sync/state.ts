@@ -39,6 +39,8 @@ export const BARRIER_STALE_MS = 5000;
 
 /** HTMLMediaElement.HAVE_METADATA, without touching the global in a test env. */
 const HAVE_METADATA = 1;
+/** HTMLMediaElement.HAVE_FUTURE_DATA: enough buffered that the element is advancing. */
+const HAVE_FUTURE_DATA = 3;
 
 function clamp(v: number, lo: number, hi: number): number {
 	return v < lo ? lo : v > hi ? hi : v;
@@ -66,9 +68,12 @@ function clampToMedia(video: HTMLMediaElement, t: number): number {
  * Events that change what an anchor means. `playing` is in the set because it
  * marks the end of a host-side stall: currentTime froze while the wall clock did
  * not, so guests have been extrapolating past the host and need a fresh anchor
- * the instant it recovers rather than at the next heartbeat.
+ * the instant it recovers rather than at the next heartbeat. `waiting` is its
+ * mirror, the start of that stall: the snapshot reads the element as not
+ * advancing (see `snapshot`), and the room has to hear that at once rather
+ * than extrapolate a second further on the heartbeat.
  */
-const ANCHOR_EVENTS = ['play', 'pause', 'seeked', 'playing'] as const;
+const ANCHOR_EVENTS = ['play', 'pause', 'seeked', 'playing', 'waiting'] as const;
 
 export class HostState {
 	private readonly video: HTMLMediaElement;
@@ -130,7 +135,13 @@ export class HostState {
 	snapshot(): State {
 		return {
 			t: 'state',
-			playing: !this.video.paused,
+			// Advancing, not merely unpaused. A host whose element is buffering
+			// (slow disk, an encoder behind on a tier-2 film) is `paused === false`
+			// at a frozen currentTime, and a heartbeat saying "playing, at 100.0"
+			// every second had guests extrapolate to 101, hard-seek back to 100,
+			// and do it again a second later for as long as the stall ran. While
+			// the host is not moving, nobody should be.
+			playing: !this.video.paused && this.video.readyState >= HAVE_FUTURE_DATA,
 			mediaTime: this.video.currentTime + this.leadIn,
 			atHostClock: nowMs(),
 			seq: ++this.seq
@@ -241,6 +252,7 @@ export class GuestSync {
 	 */
 	reset(): void {
 		this.state = null;
+		this.seekFrom = null;
 		this.err = 0;
 	}
 
@@ -253,13 +265,39 @@ export class GuestSync {
 		this.correct();
 	}
 
+	/**
+	 * The state whose hard seek is in flight, so a seek that lands while the
+	 * element is still seeking can be told apart from drift measured against a
+	 * target the element already reads as current.
+	 */
+	private seekFrom: State | null = null;
+
 	private correct(): void {
 		const s = this.state;
 		if (!s) return;
+		// Play and pause are honoured before anything that could defer them. The
+		// seeking guard below used to sit in front of this, and a seek whose
+		// target the host was slow to serve (a cold rung, a far corner of the
+		// file) held every later state back for as long as the fetch took - an
+		// authoritative pause included, so the room stopped and this element
+		// played on for up to a minute. Nothing about play/pause depends on the
+		// playhead being settled.
+		if (this.video.readyState < HAVE_METADATA) return;
+		this.follow(s);
+
 		// currentTime already reads as the target of an in-flight seek, so
-		// measuring now would stack a second seek on top of the first, and the
-		// error is meaningless before metadata exists.
-		if (this.video.seeking || this.video.readyState < HAVE_METADATA) return;
+		// measuring against it would stack a second seek on top of the first.
+		// Only a *different* seek may interrupt one: the host moved again, which
+		// shows as the state's own position jumping away from where the one we
+		// are seeking for said it would be by now.
+		if (this.video.seeking) {
+			if (this.seekFrom && this.supersedes(s, this.seekFrom)) {
+				this.seekFrom = s;
+				this.video.currentTime = clampToMedia(this.video, this.targetOf(s));
+			}
+			return;
+		}
+		this.seekFrom = null;
 
 		// Extrapolating against atHostClock needs a *measured* offset. Until the
 		// first pong lands ClockSync reports 0, so hostNow() is our own clock --
@@ -271,23 +309,16 @@ export class GuestSync {
 		// while the first pong is a full round trip behind it. Honour play/pause
 		// and leave the playhead alone for that one RTT. A paused state does not
 		// extrapolate, so it is unaffected.
-		if (s.playing && this.clock.samples === 0) {
-			this.follow(s);
-			return;
-		}
+		if (s.playing && this.clock.samples === 0) return;
 
-		// The one place seconds and milliseconds meet. atHostClock and hostNow()
-		// are ms; mediaTime and currentTime are seconds.
-		const elapsedSec = (this.clock.hostNow() - s.atHostClock) / 1000;
-		const target = s.playing ? s.mediaTime + elapsedSec : s.mediaTime;
+		const target = this.targetOf(s);
 		const err = target - this.video.currentTime;
 		this.err = err;
-
-		this.follow(s);
 
 		const mag = Math.abs(err);
 		if (mag >= HARD_SEEK_SEC) {
 			this.setRate(1);
+			this.seekFrom = s;
 			this.video.currentTime = clampToMedia(this.video, target);
 		} else if (s.playing && mag >= DEADBAND_SEC) {
 			// Converges a 0.5s error in 10s, inaudibly. Sign follows err: behind
@@ -298,6 +329,29 @@ export class GuestSync {
 			// itself to the first moments of the next play. Keep it at 1.
 			this.setRate(1);
 		}
+	}
+
+	/**
+	 * Where the host is now, per `s`. The one place seconds and milliseconds
+	 * meet: atHostClock and hostNow() are ms; mediaTime and currentTime are
+	 * seconds.
+	 */
+	private targetOf(s: State): number {
+		const elapsedSec = (this.clock.hostNow() - s.atHostClock) / 1000;
+		return s.playing ? s.mediaTime + elapsedSec : s.mediaTime;
+	}
+
+	/**
+	 * Whether `next` describes a new seek rather than `from` a moment later. The
+	 * host's heartbeat advances mediaTime with playback, so the comparison is
+	 * against where `from` predicts the host would be at `next`'s clock reading,
+	 * and only a jump wider than the hard-seek threshold counts.
+	 */
+	private supersedes(next: State, from: State): boolean {
+		if (next === from) return false;
+		const elapsedSec = from.playing ? (next.atHostClock - from.atHostClock) / 1000 : 0;
+		const predicted = from.mediaTime + elapsedSec;
+		return Math.abs(next.mediaTime - predicted) >= HARD_SEEK_SEC;
 	}
 
 	/**
@@ -412,6 +466,13 @@ export class ReadinessBarrier {
 	rearm(): void {
 		if (!this.overridden) return;
 		this.overridden = false;
+		// Every verdict on file is about buffers at the position the room just
+		// left. Evaluating them here re-paused the room at the instant of the
+		// seek on a straggler's last pre-seek report, before anyone had loaded a
+		// frame of the new position. The next report from each guest decides;
+		// until then nobody is blocking, which `evaluate` reads as a resume for a
+		// hold the override had already lifted - a no-op.
+		for (const p of this.peers.values()) p.blocking = false;
 		this.evaluate();
 	}
 

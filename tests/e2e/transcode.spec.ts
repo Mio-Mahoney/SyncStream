@@ -23,14 +23,14 @@ test('the host can watch a film it has to convert', async ({ page, context }) =>
 		MediaSource.isTypeSupported = (type: string) => !/hvc1|hev1/.test(type) && real(type);
 	});
 
-	const { code, errors } = await openHost(page, 'hevc.mp4');
+	const { code, secret, errors } = await openHost(page, 'hevc.mp4');
 	await until(
 		() => snapshot(page),
 		(s) => s.tier === 'transcode',
 		{ what: 'the probe to pick tier 2', timeout: 45_000 }
 	);
 
-	const { page: guest } = await openGuest(context, code);
+	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
 		() => snapshot(guest),
 		(s) => s.ttff !== null,

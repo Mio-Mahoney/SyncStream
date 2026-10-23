@@ -10,6 +10,7 @@
  */
 
 import shaka from 'shaka-player/dist/shaka-player.compiled.js';
+import { manifestRungs, rungWindow, type RungCandidate } from '$lib/media/shaka/rungs';
 
 /**
  * A watch party is VOD over one host uplink, so we buffer far more aggressively
@@ -55,7 +56,17 @@ export async function createPlayer(video: HTMLMediaElement): Promise<shaka.Playe
 
 export function configurePlayer(
 	player: shaka.Player,
-	opts: { bandwidthEstimate?: number; availableRungs?: number[] }
+	opts: {
+		bandwidthEstimate?: number;
+		availableRungs?: number[];
+		/**
+		 * The manifest about to be loaded. With it the rung window is decided
+		 * from the manifest's own representation list before `load()`, which is
+		 * the only way to steer the FIRST variant Shaka picks; after load the
+		 * loaded variants are read instead.
+		 */
+		mpd?: string;
+	}
 ): void {
 	player.configure({
 		streaming: {
@@ -99,7 +110,9 @@ export function configurePlayer(
 		}
 	}
 
-	if (opts.availableRungs !== undefined) applyRungRestrictions(player, opts.availableRungs);
+	if (opts.availableRungs !== undefined) {
+		applyRungRestrictions(player, opts.availableRungs, opts.mpd);
+	}
 }
 
 /**
@@ -121,54 +134,38 @@ export function configureHostPlayer(player: shaka.Player): void {
  * PLAN.md 4.5: serve a rung only once its leading segments are ready, so encode
  * latency is never read by the estimator as network congestion.
  *
- * Heights come from the loaded variants rather than from LADDER because rep 0
- * is `native`, whose real height only the manifest knows.
+ * The policy itself is `rungWindow` in rungs.ts, pure and tested on its own.
+ * This is the glue: before load the candidates come from the manifest text
+ * (the only source there is, and the only moment that steers the first pick);
+ * after load they come from the variants Shaka kept, whose heights are the
+ * truth, rep 0's included - `native` has no height until the manifest says.
  *
  * Known limitation, stated rather than hidden: Shaka's restrictions are a
- * numeric window, so they cannot express a gap. If the host advertises a
- * non-contiguous set (say native and 480p but not 720p), the window spans the
- * extremes and a cold rung strictly inside it stays selectable. The window is
- * never wider than the extremes of the available set, so the rungs the host has
- * not started are always excluded; only a skipped middle rung can leak. Closing
- * that hole exactly would mean writing an AbrManager, which 4.2 forbids.
- *
- * The ladder therefore never produces the hole: it warms and advertises
- * top-down (ladder.ts warmUp), so every set that reaches this window is a
- * contiguous prefix of the ladder and the window states it exactly. This
- * used to be a live leak, not a latent one -- cheapest-first warming left
- * 720p as a cold mid-window rung for the whole warm-up, and throttled guests
- * downshifted onto it. The window below stays as defensive translation, not
- * as the guarantee.
+ * numeric window, so they cannot express a gap. The ladder never produces one
+ * (it warms and advertises top-down, so every advertised set is a contiguous
+ * prefix), and the window below is defensive translation, not the guarantee.
  */
-function applyRungRestrictions(player: shaka.Player, rungs: number[]): void {
-	const heights = new Map<number, number>();
-	for (const track of player.getVariantTracks()) {
+function applyRungRestrictions(player: shaka.Player, rungs: number[], mpd?: string): void {
+	let candidates: RungCandidate[] = player.getVariantTracks().flatMap((track) => {
 		const rep = repIdOf(track);
-		if (rep === null || track.height === null) continue;
-		heights.set(rep, track.height);
+		return rep === null || track.height === null
+			? []
+			: [{ repId: rep, height: track.height, playable: true }];
+	});
+	if (candidates.length === 0 && mpd !== undefined) {
+		const supported = (type: string): boolean =>
+			typeof MediaSource !== 'undefined' && MediaSource.isTypeSupported(type);
+		candidates = manifestRungs(mpd, supported);
 	}
+	// Nothing loaded and no manifest to read: nothing is selectable anyway, and
+	// the host's next rung change reapplies this against a loaded one. An
+	// audio-only film has no video rung to restrict.
+	if (candidates.length === 0) return;
 
-	// Before load() there are no variants and nothing is selectable anyway; the
-	// host's next rung change reapplies this against a loaded manifest. An
-	// audio-only file has no video rung to restrict.
-	if (heights.size === 0) return;
-
-	const available: number[] = [];
-	for (const [rep, height] of heights) {
-		if (rungs.includes(rep)) available.push(height);
-	}
-
+	const window = rungWindow(candidates, rungs);
 	// Restricting everything away would lock playback out entirely, which is a
 	// worse failure than serving a rung the host did not advertise.
-	if (available.length === 0 || available.length === heights.size) {
-		player.configure('abr.restrictions', { minHeight: 0, maxHeight: Infinity });
-		return;
-	}
-
-	player.configure('abr.restrictions', {
-		minHeight: Math.min(...available),
-		maxHeight: Math.max(...available)
-	});
+	player.configure('abr.restrictions', window ?? { minHeight: 0, maxHeight: Infinity });
 }
 
 /**
