@@ -179,3 +179,77 @@ test('a name off the wire cannot wreck the room it lands in', async ({ page, con
 	).toBeLessThanOrEqual(24);
 	await expect(page.getByTestId('guests')).toHaveText(/^\s*x{1,24} is here\.$/);
 });
+
+/**
+ * A guest who has never named themselves is asked on the way in. The prompt is
+ * not a gate: the room connects behind it under the fallback name, and the
+ * answer arrives as a rename (identity.ts).
+ *
+ * In a context with nothing stored, because playwright.config.ts marks every
+ * other test's guests as already asked.
+ */
+const NEVER_ASKED = { storageState: { cookies: [], origins: [] } };
+
+test('a new guest is asked who they are, and is in the room while they answer', async ({
+	page,
+	browser
+}) => {
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const fresh = await browser.newContext(NEVER_ASKED);
+	const { page: guest } = await openGuest(fresh, { code, secret });
+
+	await expect(guest.getByTestId('name-prompt'), 'a new guest must be asked').toBeVisible();
+
+	// Arrived while the prompt is still open: asking held nobody up.
+	await until(
+		() => snapshot(page),
+		(s) => s.peers.length === 1 && /^Guest \d+$/.test(s.peers[0].name),
+		{ what: 'the guest to reach the host with the prompt still open', timeout: 60_000 }
+	);
+	await expect(guest.getByTestId('name-prompt')).toBeVisible();
+
+	await guest.getByTestId('name-prompt-field').fill('  Alice  ');
+	await guest.getByTestId('name-prompt-save').click();
+
+	await expect(guest.getByTestId('name-prompt')).toBeHidden();
+	await expect(page.getByTestId('guests'), 'the host must read the name they gave').toHaveText(
+		/^\s*Alice is here\.$/
+	);
+	await expect(guest.getByTestId('guest-name-name')).toHaveText('Alice');
+
+	// Asked once, ever: the name is remembered and the next room opens under it.
+	await guest.reload();
+	await expect(guest.getByTestId('guest-name-name')).toHaveText('Alice', { timeout: 45_000 });
+	await expect(guest.getByTestId('name-prompt')).toHaveCount(0);
+	await fresh.close();
+});
+
+test('a new guest can skip the name prompt, and is not asked again', async ({ page, browser }) => {
+	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
+	const fresh = await browser.newContext(NEVER_ASKED);
+	const { page: guest } = await openGuest(fresh, { code, secret });
+
+	// Escape is the native dialog's cancel, and counts as a skip.
+	await expect(guest.getByTestId('name-prompt')).toBeVisible();
+	await guest.keyboard.press('Escape');
+	await expect(guest.getByTestId('name-prompt')).toBeHidden();
+	await expect(guest.getByTestId('guest-name-name')).toHaveText(/^Guest \d+$/, {
+		timeout: 45_000
+	});
+
+	await guest.reload();
+	await expect(guest.getByTestId('guest-name-name')).toHaveText(/^Guest \d+$/, {
+		timeout: 45_000
+	});
+	await expect(guest.getByTestId('name-prompt')).toHaveCount(0);
+	await fresh.close();
+});
+
+test('the host is never asked', async ({ browser }) => {
+	const fresh = await browser.newContext(NEVER_ASKED);
+	const host = await fresh.newPage();
+	await openRoom(host);
+	await expect(host.getByTestId('host-name-name')).toHaveText('Host');
+	await expect(host.getByTestId('name-prompt')).toHaveCount(0);
+	await fresh.close();
+});

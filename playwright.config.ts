@@ -59,7 +59,19 @@ export default defineConfig({
 		// an element that is legitimately absent waits forever and even a
 		// .catch() never fires. Bound them, so a missing element fails the test
 		// it belongs to instead of eating the whole run's budget.
-		actionTimeout: 15_000
+		actionTimeout: 15_000,
+		// Every guest has already answered the name prompt (identity.ts), so a
+		// modal is not sitting over the room in tests whose claim is about
+		// something else. naming.spec.ts clears this to test the prompt itself.
+		storageState: {
+			cookies: [],
+			origins: [
+				{
+					origin: `http://localhost:${PORT}`,
+					localStorage: [{ name: 'syncstream:name-asked', value: '1' }]
+				}
+			]
+		}
 	},
 
 	projects: [

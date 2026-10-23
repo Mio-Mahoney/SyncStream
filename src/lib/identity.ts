@@ -13,15 +13,16 @@
  * up" names the one person in the room whose connection the host might actually
  * ask about, and names them unrecognisably.
  *
- * The name is kept here rather than asked for on the way in, because the way in
- * is a link: "it opens the room straight away, with no code to type" is the
- * whole point of the invite, and a name prompt in front of it would be a toll
- * booth on the app's best path. So a room always opens under a fallback name and
- * the room itself is where you say who you are - once, ever, since this
- * remembers.
+ * A guest who has never named themselves is asked on the way in (NamePrompt),
+ * but the asking is not a gate. "It opens the room straight away, with no code
+ * to type" is the whole point of the invite, so the room connects and the film
+ * loads behind the prompt under a fallback name, and the answer arrives as a
+ * rename. Asked once, ever: a name or a skip is remembered.
  */
 
 const KEY = 'syncstream:name';
+/** Set once a guest has answered the prompt, either way, so it never nags. */
+const ASKED_KEY = 'syncstream:name-asked';
 
 /**
  * Long enough for a name, short enough that it cannot wreck the sentences it
@@ -74,6 +75,28 @@ export function saveName(name: string): void {
 	} catch {
 		// See readName. Their name still applies to this room; it just will not
 		// survive to the next one.
+	}
+}
+
+/**
+ * Whether to put the name prompt in front of a guest: they have no name and
+ * have never been asked. A storage that throws reads as "asked", because a
+ * prompt that could never remember its answer would return on every visit.
+ */
+export function shouldAskName(): boolean {
+	try {
+		return !readName() && localStorage.getItem(ASKED_KEY) === null;
+	} catch {
+		return false;
+	}
+}
+
+/** Records that the prompt was answered, by a name or by a skip. */
+export function markNameAsked(): void {
+	try {
+		localStorage.setItem(ASKED_KEY, '1');
+	} catch {
+		// See shouldAskName: a storage that throws is never prompted from.
 	}
 }
 

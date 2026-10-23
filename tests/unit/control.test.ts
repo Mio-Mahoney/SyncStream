@@ -4,6 +4,7 @@ import {
 	decodeControl,
 	encodeControl,
 	faultOf,
+	guestMayAsk,
 	isFault,
 	parseSegKey,
 	segKey
@@ -44,5 +45,20 @@ describe('faults', () => {
 		expect(faultOf(new FaultError(f))).toEqual(f);
 		expect(faultOf(new Error('boom'), 'encoder')).toEqual({ code: 'encoder', detail: 'boom' });
 		expect(faultOf('str')).toEqual({ code: 'unknown', detail: 'str' });
+	});
+});
+
+describe('guest intents', () => {
+	const intent = (action: string) =>
+		({ t: 'intent', action, mediaTime: 10 }) as Parameters<typeof guestMayAsk>[0];
+	test('a guest may play or pause the film', () => {
+		expect(guestMayAsk(intent('play'))).toBe(true);
+		expect(guestMayAsk(intent('pause'))).toBe(true);
+	});
+	test('only the host scrubs, so a guest seek is refused', () => {
+		expect(guestMayAsk(intent('seek'))).toBe(false);
+	});
+	test('an action this app never sends is refused', () => {
+		expect(guestMayAsk(intent('rewind'))).toBe(false);
 	});
 });

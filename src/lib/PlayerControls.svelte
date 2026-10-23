@@ -19,12 +19,28 @@
 		playing: boolean;
 		currentTime: number;
 		duration: number;
+		/**
+		 * Whether this viewer may move the film. Only the host scrubs: a guest's
+		 * bar still shows where the film is, but cannot be dragged, and the arrow
+		 * keys do nothing. The host refuses a guest's seek regardless, so this is
+		 * the page being honest about that rather than the rule itself.
+		 */
+		canSeek: boolean;
 		onToggle: () => void;
 		onSeek: (seconds: number) => void;
 	}
 
-	let { video, container, ready, playing, currentTime, duration, onToggle, onSeek }: Props =
-		$props();
+	let {
+		video,
+		container,
+		ready,
+		playing,
+		currentTime,
+		duration,
+		canSeek,
+		onToggle,
+		onSeek
+	}: Props = $props();
 
 	const SKIP = 5;
 
@@ -135,6 +151,7 @@
 	}
 
 	function skip(by: number) {
+		if (!canSeek) return;
 		onSeek(Math.min(Math.max(currentTime + by, 0), duration || Infinity));
 	}
 
@@ -208,10 +225,14 @@
 				onToggle();
 				break;
 			case 'ArrowLeft':
+				// Left to the browser for a guest, so the arrows still scroll the
+				// page rather than being swallowed by a skip that would not happen.
+				if (!canSeek) return;
 				e.preventDefault();
 				skip(-SKIP);
 				break;
 			case 'ArrowRight':
+				if (!canSeek) return;
 				e.preventDefault();
 				skip(SKIP);
 				break;
@@ -320,8 +341,10 @@
 		value={shownTime}
 		oninput={(e) => (scrubbing = Number((e.target as HTMLInputElement).value))}
 		onchange={commitSeek}
-		disabled={!duration}
+		disabled={!duration || !canSeek}
+		title={canSeek ? undefined : 'Only the host can skip through the film'}
 		style="--progress: {progress}%"
+		class:locked={!canSeek}
 		class="seek order-1 h-1.5 basis-full cursor-pointer disabled:cursor-default disabled:opacity-50 sm:order-3 sm:min-w-0 sm:flex-1 sm:basis-0"
 		aria-label="Seek"
 		data-testid="seek"
@@ -469,5 +492,24 @@
 	.seek:disabled::-moz-range-thumb {
 		background: theme('colors.moonstone.300');
 		cursor: default;
+	}
+
+	/**
+	 * A guest's bar: a progress line, not a disabled control. Greyed out at half
+	 * strength it read as broken for the whole film, and a thumb invites a drag
+	 * that cannot happen. Out-specifies Tailwind's `disabled:opacity-50`.
+	 */
+	.seek.locked:disabled {
+		opacity: 1;
+	}
+
+	.seek.locked::-webkit-slider-thumb {
+		width: 0;
+		border-width: 0;
+	}
+
+	.seek.locked::-moz-range-thumb {
+		width: 0;
+		border-width: 0;
 	}
 </style>

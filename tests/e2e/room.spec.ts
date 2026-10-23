@@ -116,7 +116,10 @@ test('the link the host copies is the link a guest can actually open', async ({
 	expect(ready.role).toBe('guest');
 });
 
-test('a guest seek resolves quickly and both sides land together', async ({ page, context }) => {
+test('a host seek resolves quickly on the guest and both sides land together', async ({
+	page,
+	context
+}) => {
 	const { code, secret } = await openHost(page, 'tiny-60s.mp4');
 	const { page: guest } = await openGuest(context, { code, secret });
 	await until(
@@ -135,18 +138,17 @@ test('a guest seek resolves quickly and both sides land together', async ({ page
 		{ what: 'playback to start' }
 	);
 
-	// A guest sends intent; the host decides and broadcasts (PLAN.md 4.9). The
-	// clock stops on a landed frame, not on the playhead being assigned, and
-	// the bound is PLAN.md Phase 2's own.
-	const seekMs = await landedSeek(guest, 40);
+	// Only the host scrubs; the host decides and broadcasts (PLAN.md 4.9). The
+	// clock stops on a landed frame on the guest's screen, not on the playhead
+	// being assigned, and the bound is PLAN.md Phase 2's own.
+	const seekMs = await landedSeek(page, 40, { on: guest });
 	expect(seekMs, 'a landed seek, as PLAN.md Phase 2 states it').toBeLessThan(2000);
 
-	// The host followed its own guest's intent, which is the authority model working.
 	await until(
 		() => videoTime(page),
 		(t) => t > 38 && t < 50,
 		{
-			what: 'the host to follow the intent'
+			what: 'the host to be where it sent the room'
 		}
 	);
 });

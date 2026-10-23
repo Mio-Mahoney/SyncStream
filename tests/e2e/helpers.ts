@@ -159,14 +159,22 @@ export const videoTime = (page: Page) =>
  * stopped the clock when `currentTime` entered a window, which is the
  * assignment itself - PLAN.md 11's "43ms" was an intent round trip, not a
  * frame on screen (REVIEW T-01).
+ *
+ * `seeker` works the control and `on` is where the landing is measured, which
+ * defaults to the seeker. Only the host may scrub, so a guest's seek is the
+ * host's control and a frame on the guest's screen.
  */
-export async function landedSeek(page: Page, target: number, timeout = 30_000): Promise<number> {
+export async function landedSeek(
+	seeker: Page,
+	target: number,
+	{ on = seeker, timeout = 30_000 }: { on?: Page; timeout?: number } = {}
+): Promise<number> {
 	const started = Date.now();
-	await page.getByTestId('seek').fill(String(target));
-	await page.getByTestId('seek').dispatchEvent('change');
+	await seeker.getByTestId('seek').fill(String(target));
+	await seeker.getByTestId('seek').dispatchEvent('change');
 	await until(
 		() =>
-			page.evaluate(() => {
+			on.evaluate(() => {
 				const v = document.querySelector('video') as HTMLVideoElement;
 				return { time: v.currentTime, seeking: v.seeking, readyState: v.readyState };
 			}),

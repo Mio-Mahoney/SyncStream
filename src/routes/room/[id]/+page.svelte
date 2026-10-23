@@ -9,6 +9,7 @@
 	import HostBar from '$lib/HostBar.svelte';
 	import InvitePanel from '$lib/InvitePanel.svelte';
 	import PlayerControls from '$lib/PlayerControls.svelte';
+	import NamePrompt from '$lib/NamePrompt.svelte';
 	import NameTag from '$lib/NameTag.svelte';
 	import NowPlaying from '$lib/NowPlaying.svelte';
 	import PausedNotice from '$lib/PausedNotice.svelte';
@@ -16,7 +17,7 @@
 	import WaitingRoom from '$lib/WaitingRoom.svelte';
 	import { roomPhase } from '$lib/room/phase';
 	import FaultNotice from '$lib/FaultNotice.svelte';
-	import { fallbackName, readName, saveName } from '$lib/identity';
+	import { fallbackName, markNameAsked, readName, saveName, shouldAskName } from '$lib/identity';
 	import { tierMessage } from '$lib/media/probe';
 	import { FaultError, faultOf, type Fault } from '$lib/protocol/control';
 	import { isDebug, exposeTestOracle, stats } from '$lib/stats.svelte';
@@ -228,15 +229,28 @@
 
 	/**
 	 * What the room calls us. A remembered name if we have ever set one, and the
-	 * machine's fallback otherwise - the room always opens, because the invite
-	 * link's whole promise is that it opens straight away and a name prompt in
-	 * front of it would be a toll booth (see identity.ts).
+	 * machine's fallback otherwise - the room always opens under it straight
+	 * away, because that is the invite link's whole promise, and the name prompt
+	 * a new guest sees is answered with a rename (see identity.ts).
 	 *
 	 * Reactive, because it is on screen: the tag in the panel, the bar and the
 	 * waiting room all read it back, and the whole point of the control is that
 	 * the reader sees it take.
 	 */
 	let name = $state('');
+	/**
+	 * A guest who has never named themselves is asked on arrival. Only once the
+	 * link has proved it can open a room: a broken link's dead end is the one
+	 * thing on screen worth reading, and a prompt over it would be a question
+	 * about a room that will never exist.
+	 */
+	let askName = $state(false);
+
+	function answerNamePrompt(next: string | null) {
+		askName = false;
+		markNameAsked();
+		if (next) rename(next);
+	}
 
 	function rename(next: string) {
 		name = next;
@@ -333,6 +347,8 @@
 			// (see asHost), which is also when a collision's new code lands there.
 			secret = generateRoomSecret();
 		}
+
+		if (!isHost) askName = shouldAskName();
 
 		const ac = new AbortController();
 		(isHost ? asHost(ac.signal, secret) : asGuest(ac.signal, secret)).catch((e: Error) => {
@@ -531,9 +547,9 @@
 		else guest?.sendIntent(action, video.currentTime);
 	}
 
+	/** Host only: a guest's bar is read-only and the host drops a guest's seek. */
 	function seek(t: number) {
-		if (host) host.intent('seek', t);
-		else guest?.sendIntent('seek', t);
+		host?.intent('seek', t);
 	}
 
 	function onTimeUpdate() {
@@ -777,6 +793,7 @@
 				{playing}
 				{currentTime}
 				{duration}
+				canSeek={isHost}
 				onToggle={togglePlay}
 				onSeek={seek}
 			/>
@@ -923,6 +940,10 @@
 				rejected={unplayable}
 			/>
 		</div>
+	{/if}
+
+	{#if askName}
+		<NamePrompt onName={answerNamePrompt} onSkip={() => answerNamePrompt(null)} />
 	{/if}
 </main>
 

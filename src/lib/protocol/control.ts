@@ -202,12 +202,27 @@ export type State = {
 	seq: number;
 };
 
-/** Guest asks; the host decides and broadcasts. */
+/**
+ * Guest asks; the host decides and broadcasts. A guest may ask for play or
+ * pause only: scrubbing is the host's alone, so a guest's `seek` is dropped on
+ * arrival. `seek` stays in the type because the host's own controls go through
+ * the same funnel.
+ */
 export type Intent = {
 	t: 'intent';
 	action: 'play' | 'pause' | 'seek';
 	mediaTime: number;
 };
+
+/**
+ * Whether the host should act on an intent a guest sent. Play and pause only:
+ * scrubbing is the host's alone. Checked on arrival because `decodeControl`
+ * types a message without validating it, and a guest is a peer we do not
+ * control, so an action this app never sends is refused here too.
+ */
+export function guestMayAsk(i: Intent): boolean {
+	return i.action === 'play' || i.action === 'pause';
+}
 
 /**
  * Who stopped the film, so the room can say why it stopped.

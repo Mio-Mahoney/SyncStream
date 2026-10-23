@@ -20,6 +20,7 @@ import {
 	FaultError,
 	INIT_SEGMENT,
 	faultOf,
+	guestMayAsk,
 	isFault,
 	type ControlMessage,
 	type Fault,
@@ -590,6 +591,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 			case 'intent':
 				// PLAN.md 4.9: guests send intent, the host decides and broadcasts.
+				// Only the host scrubs. The guest's page saying so (its seek bar
+				// is read-only) is no guarantee, so the refusal lives here.
+				if (!guestMayAsk(msg)) break;
 				applyIntentFrom(link.peerId, msg);
 				break;
 

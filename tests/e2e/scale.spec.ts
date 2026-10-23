@@ -86,7 +86,7 @@ test.describe(() => {
 		// Seek far into a file that was never uploaded anywhere. Landed, not
 		// assigned: the frame is on screen when the clock stops.
 		const target = 900;
-		const seekMs = await landedSeek(guest, target);
+		const seekMs = await landedSeek(page, target, { on: guest });
 
 		// Play through the seek for a while, so the memory peak includes a
 		// working buffer on both sides rather than the first few segments.

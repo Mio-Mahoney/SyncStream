@@ -37,7 +37,11 @@ import type shaka from 'shaka-player/dist/shaka-player.compiled.js';
 
 export type GuestRoom = {
 	close(): void;
-	sendIntent(action: 'play' | 'pause' | 'seek', mediaTime: number): void;
+	/**
+	 * Ask the host to play or pause. No seek: only the host scrubs the film, and
+	 * the host drops a guest's seek intent if one arrives anyway.
+	 */
+	sendIntent(action: 'play' | 'pause', mediaTime: number): void;
 	/**
 	 * Say who we are. `name` was only ever a fallback ("Guest 412"), and the room
 	 * is where it gets replaced: the invite link puts us in the room before we
