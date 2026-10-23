@@ -213,6 +213,21 @@ async function transcodeVideo(
 	try {
 		for (const s of samples) {
 			if (!s.data) throw new Error('mp4box returned a video sample with no data');
+			// Backpressure, which this loop used to have none of. The decoder
+			// (hardware, usually) runs far ahead of the encoder, and every decoded
+			// frame it hands over is ~3MB of raw 1080p that the encoder's queue
+			// holds until it gets to it: a 4s GOP pushed in one go is 120 frames,
+			// ~360MB, per worker, and the host's process peaked well over the
+			// Phase 2 memory budget while its heap sat at 150MB. Keeping a few
+			// frames in each queue costs nothing in throughput - the encoder is
+			// the bottleneck either way - and bounds the raw frames in flight.
+			while (
+				decoder.decodeQueueSize > MAX_QUEUED_CHUNKS ||
+				encoder.encodeQueueSize > MAX_QUEUED_FRAMES
+			) {
+				await dequeued(decoder, encoder);
+				if (errors.length > 0) throw errors[0];
+			}
 			decoder.decode(
 				new EncodedVideoChunk({
 					type: s.is_sync ? 'key' : 'delta',
@@ -247,6 +262,25 @@ async function transcodeVideo(
 		ctsByUs.get(firstOutUs) ?? Math.round((firstOutUs * timescale) / 1e6)
 	);
 	return parts;
+}
+
+/** Chunks the decoder may hold, and raw frames the encoder may hold, before the feed waits. */
+const MAX_QUEUED_CHUNKS = 8;
+const MAX_QUEUED_FRAMES = 4;
+
+/** Resolves when either codec drains an item, or at once if one has already errored. */
+function dequeued(decoder: VideoDecoder, encoder: VideoEncoder): Promise<void> {
+	return new Promise((resolve) => {
+		const done = (): void => {
+			decoder.removeEventListener('dequeue', done);
+			encoder.removeEventListener('dequeue', done);
+			resolve();
+		};
+		decoder.addEventListener('dequeue', done, { once: true });
+		encoder.addEventListener('dequeue', done, { once: true });
+		// A codec that has closed on error never dequeues; do not wait on it.
+		if (decoder.state === 'closed' || encoder.state === 'closed') done();
+	});
 }
 
 function needsScale(frame: VideoFrame, width: number, height: number): boolean {

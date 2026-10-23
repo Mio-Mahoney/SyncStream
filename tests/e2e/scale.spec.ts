@@ -73,7 +73,8 @@ test.describe(() => {
 				timeout: 120_000
 			}
 		);
-		expect(first.ttff, 'time to first frame').toBeLessThan(5000);
+		// Asserted below, after the measurements are logged: a run that misses
+		// the bar is still a measurement, and the distribution is the point.
 
 		await page.getByTestId('play').click();
 		await until(
@@ -100,7 +101,7 @@ test.describe(() => {
 
 		const hostHeap = await heapMb(page);
 		const guestHeap = await heapMb(guest);
-		const peakRendererMb = await rss.stop();
+		const { peak: peakRendererMb, top: renderers } = await rss.stop();
 
 		const line = (k: string, v: string) => `  ${k.padEnd(22)}: ${v}`;
 		console.log(
@@ -108,7 +109,10 @@ test.describe(() => {
 				`\nPLAN.md 11 measurements (fixture ${sizeGb.toFixed(2)} GB):`,
 				line('time to first frame', `${first.ttff!.toFixed(0)} ms (painted frame)`),
 				line(`seek to ${target}s (landed)`, `${seekMs} ms`),
-				line('peak renderer RSS', `${peakRendererMb.toFixed(0)} MB (largest of host, guest)`),
+				line(
+					'peak renderer RSS',
+					`${peakRendererMb.toFixed(0)} MB (renderers at peak: ${renderers.map((m) => m.toFixed(0)).join(' / ')})`
+				),
 				line('host JS heap', `${hostHeap.toFixed(0)} MB`),
 				line('guest JS heap', `${guestHeap.toFixed(0)} MB`),
 				line('guest stalls', String(stalls)),
@@ -117,17 +121,24 @@ test.describe(() => {
 					`${hostTimings.probeMs ?? '-'} / ${hostTimings.originMs ?? '-'} ms`
 				),
 				line(
-					'guest queue / load',
-					`${guestTimings.readyToLoadMs ?? '-'} / ${guestTimings.loadMs ?? '-'} ms`
+					'guest queue/create/load',
+					`${guestTimings.readyToLoadMs ?? '-'} / ${guestTimings.createPlayerMs ?? '-'} / ${guestTimings.loadMs ?? '-'} ms`
 				),
+				line(
+					'load -> data -> frame',
+					`${guestTimings.loadToDataMs ?? '-'} / ${guestTimings.loadToFrameMs ?? '-'} ms`
+				),
+				line('host serve trace', (await snapshot(page)).fetchTrace.join(' | ')),
+				line('guest fetch trace', first.fetchTrace.join(' | ')),
 				''
 			].join('\n')
 		);
 		testInfoLog(
-			`ttff=${first.ttff!.toFixed(0)} seek=${seekMs} rss=${peakRendererMb.toFixed(0)} hostHeap=${hostHeap.toFixed(0)} guestHeap=${guestHeap.toFixed(0)} stalls=${stalls} probe=${hostTimings.probeMs ?? 0} origin=${hostTimings.originMs ?? 0} queue=${guestTimings.readyToLoadMs ?? 0} load=${guestTimings.loadMs ?? 0}`
+			`ttff=${first.ttff!.toFixed(0)} seek=${seekMs} rss=${peakRendererMb.toFixed(0)} hostHeap=${hostHeap.toFixed(0)} guestHeap=${guestHeap.toFixed(0)} stalls=${stalls} probe=${hostTimings.probeMs ?? 0} origin=${hostTimings.originMs ?? 0} queue=${guestTimings.readyToLoadMs ?? 0} create=${guestTimings.createPlayerMs ?? 0} load=${guestTimings.loadMs ?? 0} toData=${guestTimings.loadToDataMs ?? 0} toFrame=${guestTimings.loadToFrameMs ?? 0} renderers=${renderers.map((m) => m.toFixed(0)).join('/')} guest="${first.fetchTrace.join(' | ')}" host="${(await snapshot(page)).fetchTrace.join(' | ')}"`
 		);
 
 		// PLAN.md Phase 2's criterion, each clause measured as it is stated.
+		expect(first.ttff, 'time to first frame').toBeLessThan(5000);
 		expect(seekMs, 'a landed seek deep into the file').toBeLessThan(2000);
 		expect(peakRendererMb, 'peak process memory on the heavier side').toBeLessThan(500);
 		expect(hostHeap, 'host JS heap must not scale with file size').toBeLessThan(500);

@@ -118,6 +118,13 @@ export type SyncStreamStats = {
 	 */
 	timings: Record<string, number>;
 	/**
+	 * The guest's first few segment fetches of the current film, one line each:
+	 * `rep/track/idx size time @+offset`, the offset being from `load()`
+	 * resolving (or from the film's start, before that). What a first-frame
+	 * number is made of, when it needs explaining.
+	 */
+	fetchTrace: string[];
+	/**
 	 * Phase 5 mesh accounting, refreshed on the guest's status tick. Null on
 	 * the host (which is the origin, not a mesh peer) and before a guest's
 	 * host link is up. `fromPeers` and `uploaded` are what prove the mesh
@@ -150,6 +157,7 @@ function initial(): SyncStreamStats {
 		ttff: null,
 		stalls: 0,
 		timings: {},
+		fetchTrace: [],
 		mesh: null
 	};
 }

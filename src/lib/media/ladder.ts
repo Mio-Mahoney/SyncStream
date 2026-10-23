@@ -214,6 +214,12 @@ export function createLadder(source: LadderSource, probe: ProbeResult): Ladder {
 			await request(NATIVE_REP, 'audio', focus, PRIORITY_WARM).catch(() => null);
 		}
 
+		// Straight away, not deferred until somebody asks for a segment - that
+		// was tried and measured (scale.spec's fetch trace): a guest's first pick
+		// is the lowest WARM rung, Shaka's untested-link estimate being 1 Mbps,
+		// so the first frame waits on the bottom rung becoming selectable, which
+		// is this whole loop finishing. Starting it later only moved the first
+		// frame later by the same amount.
 		// Top-down: 720p, then 480p, then 360p. Rep 0 is always in the set, so
 		// this order makes every advertised set a contiguous prefix of the
 		// ladder -- the only shape Shaka's numeric restrictions window can

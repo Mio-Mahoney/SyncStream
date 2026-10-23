@@ -310,7 +310,17 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			}, HOST_FETCH_SWEEP_MS);
 
 			pending.set(reqId, {
-				resolve,
+				resolve: (bytes) => {
+					// The first few fetches of a film, as a trace: what was asked for,
+					// how big it was, how long it took, and when it started relative to
+					// the load. This is how a first-frame miss is attributed.
+					if (stats.fetchTrace.length < FETCH_TRACE_MAX) {
+						stats.fetchTrace.push(
+							`${repId}/${track}/${segIdx} ${(bytes.byteLength / 1e6).toFixed(2)}MB ${Math.round(performance.now() - startedAt)}ms @+${Math.round(startedAt - (loadedAt ?? filmStartedAt))}`
+						);
+					}
+					resolve(bytes);
+				},
 				reject,
 				cleanup: () => {
 					signal.removeEventListener('abort', onAbort);
@@ -405,6 +415,9 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		refusedFilmId = null;
 		mesh.noteDuration(duration);
 		markTtffStart();
+		filmStartedAt = performance.now();
+		loadedAt = null;
+		stats.fetchTrace = [];
 		stats.timings.readyToLoadMs = Math.round(performance.now() - readyAt);
 
 		/**
@@ -437,12 +450,14 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			throw Object.assign(new Error(fault.detail), { fault });
 		};
 
+		const createStarted = performance.now();
 		try {
 			player = await createPlayer(opts.video);
 		} catch (err) {
 			await refuse(err);
 		}
 		if (!player) return;
+		stats.timings.createPlayerMs = Math.round(performance.now() - createStarted);
 		if (closed || loadedFilmId !== filmId) {
 			await player.destroy();
 			player = null;
@@ -488,6 +503,12 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			URL.revokeObjectURL(blob);
 		}
 		stats.timings.loadMs = Math.round(performance.now() - loadStarted);
+		const loaded = performance.now();
+		opts.video.addEventListener(
+			'loadeddata',
+			() => (stats.timings.loadToDataMs = Math.round(performance.now() - loaded)),
+			{ once: true }
+		);
 		if (closed || loadedFilmId !== filmId) return;
 
 		// Restrictions re-applied against the loaded variants: the manifest read
@@ -525,12 +546,24 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 		if (!opts.video.seeking) noteStall();
 	};
 
+	/** When the current film's `load()` resolved, for the first-frame breakdown. */
+	let loadedAt: number | null = null;
+	/** When the current film's playback began to be set up (markTtffStart). */
+	let filmStartedAt = 0;
+	const FETCH_TRACE_MAX = 10;
+
 	const markOnFirstPaint = (video: HTMLMediaElement): void => {
+		loadedAt = performance.now();
 		const v = video as HTMLVideoElement & {
 			requestVideoFrameCallback?: (cb: () => void) => number;
 		};
 		if (typeof v.requestVideoFrameCallback === 'function') {
-			v.requestVideoFrameCallback(() => markFirstFrame());
+			v.requestVideoFrameCallback(() => {
+				stats.timings.loadToFrameMs = Math.round(
+					performance.now() - (loadedAt ?? performance.now())
+				);
+				markFirstFrame();
+			});
 		} else {
 			video.addEventListener('loadeddata', () => markFirstFrame(), { once: true });
 		}
@@ -657,6 +690,8 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 			case 'ready':
 				if (!fromHost) break;
 				if (typeof msg.film !== 'string' || typeof msg.mpd !== 'string') break;
+				// Before the load this starts, so the first pick is windowed.
+				stats.availableRungs = cleanRungs(msg.rungs);
 				queuePlayback(
 					msg.film,
 					msg.mpd,
@@ -679,9 +714,7 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 
 			case 'rungs': {
 				if (!fromHost) break;
-				const available = Array.isArray(msg.available)
-					? msg.available.filter((r): r is number => Number.isInteger(r) && r >= 0)
-					: [];
+				const available = cleanRungs(msg.available);
 				stats.availableRungs = available;
 				if (player && loadedFilmId) configurePlayer(player, { availableRungs: available });
 				break;
@@ -870,6 +903,11 @@ export async function startGuestRoom(opts: GuestRoomOptions): Promise<GuestRoom>
 				settle(reqId, (p) => p.reject(new Error('room closed')));
 		}
 	};
+}
+
+/** A rung list off the wire: integers, non-negative, or nothing. */
+function cleanRungs(raw: unknown): number[] {
+	return Array.isArray(raw) ? raw.filter((r): r is number => Number.isInteger(r) && r >= 0) : [];
 }
 
 /** A film title off the wire, bounded like a name is (film.ts TITLE_MAX is the sender's bound). */

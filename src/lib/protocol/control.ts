@@ -140,6 +140,14 @@ export type Ready = {
 	 * alone cannot tell a repeat from a renamed copy of the same file.
 	 */
 	film: string;
+	/**
+	 * The rungs warm at this moment (see `Rungs`), carried here as well because
+	 * the guest decides its FIRST variant during `load()`, and `load()` starts
+	 * the instant `ready` lands. A separate `rungs` message sent right after
+	 * arrives in time only by luck; without it the guest opened unrestricted,
+	 * its bandwidth guess picked 360p, and every first frame was the bottom rung.
+	 */
+	rungs: number[];
 };
 
 /** Host cannot serve this file at all (PLAN.md 4.3 tier 3), with a real reason. */

@@ -84,6 +84,7 @@ export type Snapshot = {
 	ttff: number | null;
 	stalls: number;
 	timings: Record<string, number>;
+	fetchTrace: string[];
 	mesh: {
 		cacheBytes: number;
 		cacheKeys: number;
@@ -208,9 +209,13 @@ export async function rendererRssMb(browser: Browser): Promise<number[]> {
 export function peakRss(browser: Browser, intervalMs = 500) {
 	let peak = 0;
 	let stopped = false;
+	/** The two largest renderers at the moment of the peak, so each side is read. */
+	let top: number[] = [];
 	const sample = async () => {
-		for (const mb of await rendererRssMb(browser).catch(() => [] as number[])) {
-			peak = Math.max(peak, mb);
+		const sizes = (await rendererRssMb(browser).catch(() => [] as number[])).sort((a, b) => b - a);
+		if (sizes.length && sizes[0] > peak) {
+			peak = sizes[0];
+			top = sizes.slice(0, 2);
 		}
 	};
 	const loop = (async () => {
@@ -220,11 +225,11 @@ export function peakRss(browser: Browser, intervalMs = 500) {
 		}
 	})();
 	return {
-		async stop(): Promise<number> {
+		async stop(): Promise<{ peak: number; top: number[] }> {
 			stopped = true;
 			await loop;
 			await sample();
-			return peak;
+			return { peak, top };
 		}
 	};
 }

@@ -506,18 +506,31 @@ Status: **built and verified**. Every number below is measured by driving the re
 
 ### Phase 2 acceptance, at the stated scale
 
-Against the real `large-2gb.mp4` (2.03 GB, 30 min, 1080p), host and guest as separate browser contexts (`tests/e2e/scale.spec.ts`):
+**Superseded by [STATUS.md](STATUS.md), October 2026.** The table below is
+kept as the record of what this section claimed when the rebuild landed, with
+the correction under it; the current numbers, and the oracles behind them,
+are in STATUS.md.
 
-| Measurement | Criterion | Measured |
-| --- | --- | --- |
-| Time to first frame | < 5s | **3.1s - 4.9s** |
-| Seek to 900s | < 2s | **43 - 45ms** |
-| Host JS heap | < 500MB | **104 - 123MB** |
-| Guest JS heap | < 500MB | **37 - 38MB** |
+Against the real `large-2gb.mp4` (2.03 GB, 30 min, 1080p), host and guest as separate browser contexts (`tests/e2e/scale.spec.ts`), as first measured:
+
+| Measurement | Criterion | Claimed (July 2026) | What the oracle measured |
+| --- | --- | --- | --- |
+| Time to first frame | < 5s | 3.1s - 4.9s | `loadeddata` at position 0, not a painted frame at the host's position |
+| Seek to 900s | < 2s | 43 - 45ms | the `currentTime` assignment landing in a window, not a decodable frame |
+| Host JS heap | < 500MB | 104 - 123MB | the JS heap, which excludes the ArrayBuffers and workers the media lives in |
+| Guest JS heap | < 500MB | 37 - 38MB | likewise |
+
+The review (REVIEW.md §4, T-01 to T-03) found each of these oracles measured
+something adjacent to the claim. Re-measured against the claim itself: a
+landed seek is around half a second, not 43 ms; the host *process* peaked at
+515-640 MB in nine of ten runs - the encode worker fed a whole GOP of raw
+1080p frames into the encoder's queue with no backpressure - and sits at a
+median of 432 MB with it; first frame is 2.0-6.8 s painted, over the bar in
+two of ten runs on a loaded machine. STATUS.md has the distributions and the
+breakdown of where the first-frame time goes (the guest's first pick waits on
+the bottom rung becoming warm, not on anything the host does before `ready`).
 
 The old build, for contrast, read the whole movie with `readAsArrayBuffer` and sent it as one message: first frame cost a complete transfer (~27 min for 4GB on a 20 Mbps uplink), repeated per guest, with both sides holding the file in JS heap. The inversion in §3 is what these numbers are.
-
-Time to first frame is the one uncomfortable number. It passes, but the spread across runs reaches 4.9s against a 5s bar, so it is the first thing to watch if probe or segmentation cost grows, and the first thing to profile if the bar ever matters.
 
 ### Other criteria
 

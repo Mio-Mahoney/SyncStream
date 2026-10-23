@@ -26,11 +26,12 @@ echo
 echo "runs logged to $log"
 echo
 awk '
-	function stats(name, arr, n,  i, sum, min, max, sorted, med) {
+	function stats(name, arr, n,  i, j, t, sum, min, max, sorted, med) {
 		if (n == 0) return
 		sum = 0; min = arr[1]; max = arr[1]
-		for (i = 1; i <= n; i++) { sum += arr[i]; if (arr[i] < min) min = arr[i]; if (arr[i] > max) max = arr[i]; sorted[i] = arr[i] }
-		asort(sorted)
+		for (i = 1; i <= n; i++) { sum += arr[i]; if (arr[i] < min) min = arr[i]; if (arr[i] > max) max = arr[i]; sorted[i] = arr[i] + 0 }
+		# insertion sort: macOS awk has no asort
+		for (i = 2; i <= n; i++) { t = sorted[i]; j = i - 1; while (j >= 1 && sorted[j] > t) { sorted[j + 1] = sorted[j]; j-- } sorted[j + 1] = t }
 		med = (n % 2) ? sorted[(n + 1) / 2] : (sorted[n / 2] + sorted[n / 2 + 1]) / 2
 		printf "  %-10s n=%d  min=%.0f  median=%.0f  mean=%.0f  max=%.0f\n", name, n, min, med, sum / n, max
 	}
@@ -46,6 +47,8 @@ awk '
 			if (kv[1] == "probe") pr[++npr] = kv[2]
 			if (kv[1] == "origin") og[++nog] = kv[2]
 			if (kv[1] == "load") ld[++nld] = kv[2]
+			if (kv[1] == "create") cr[++ncr] = kv[2]
+			if (kv[1] == "toFrame") tf[++ntf] = kv[2]
 		}
 	}
 	END {
@@ -57,6 +60,8 @@ awk '
 		stats("stalls", st, nst)
 		stats("probe ms", pr, npr)
 		stats("origin ms", og, nog)
+		stats("create ms", cr, ncr)
 		stats("load ms", ld, nld)
+		stats("toFrame ms", tf, ntf)
 	}
 ' "$log"

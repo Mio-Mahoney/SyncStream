@@ -97,7 +97,7 @@ Rendezvous only introduces two peers; the connection itself still has to cross b
 Whether you need it is a measurement, not a guess. Open a room with `?debug` and read **candidate type** on a real cross-network guest:
 
 - `host` / `srflx` / `prflx` -- connected directly. TURN would have changed nothing. The host's overlay shows the type per guest, refreshed every second; the guest's shows its own.
-- `iceState: failed` -- this connection needed TURN. With none configured a `relay` candidate can never be gathered, so an *observed* ICE failure is what "needed TURN" looks like here. A connection that merely never finished opening inside the deadline is not counted: it is usually the same thing, but it is also what a host who closed the page a moment ago looks like, and the guest's screen says so with that hedge.
+- `iceState: failed` -- this connection needed TURN. With none configured a `relay` candidate can never be gathered, so an _observed_ ICE failure is what "needed TURN" looks like here. A connection that merely never finished opening inside the deadline is not counted: it is usually the same thing, but it is also what a host who closed the page a moment ago looks like, and the guest's screen says so with that hedge.
 
 If that failure rate is high enough to matter:
 

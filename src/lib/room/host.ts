@@ -226,6 +226,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 	let title = '';
 	/** The film's id (`Ready.film`). Empty until the first file is on. */
 	let film = '';
+	/** When the current film went on, for the serve trace's offsets. */
+	let filmStartedAt = 0;
 	const guestNames = new Map<string, string>();
 	/** Guests whose player refused the current film, so a status from them is news. */
 	const cannotPlay = new Set<string>();
@@ -402,9 +404,9 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 			mpd: origin.mpd,
 			duration: origin.durationSec,
 			title,
-			film
+			film,
+			rungs: origin.availableRungs()
 		});
-		link.channels.sendControl({ t: 'rungs', available: origin.availableRungs() });
 		link.channels.sendControl(state.snapshot());
 		// The state above may well be a paused one. A guest who arrives to a film
 		// that is stopped needs the reason as much as the people who watched it
@@ -469,12 +471,22 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 
 		mine.set(reqId, { repId, track, segIdx });
 		stats.segmentQueue = ++serving;
+		const started = performance.now();
 		try {
 			const bytes =
 				segIdx === INIT_SEGMENT
 					? await o.getInit(repId, track)
 					: await o.getSegment(repId, track, segIdx);
+			const produced = performance.now();
 			await link.channels.sendSegment(reqId, bytes);
+			// The first few segments served for a film, as a trace: what, how big,
+			// how long to produce and how long to send. The host's share of a
+			// guest's first frame, when it needs explaining.
+			if (stats.fetchTrace.length < 10) {
+				stats.fetchTrace.push(
+					`${repId}/${track}/${segIdx} ${(bytes.byteLength / 1e6).toFixed(2)}MB produce ${Math.round(produced - started)}ms send ${Math.round(performance.now() - produced)}ms @+${Math.round(started - filmStartedAt)}`
+				);
+			}
 		} catch (err) {
 			// The guest cancelled it (a seek away). It is no longer waiting on a
 			// reply, so there is nobody to send an error to.
@@ -805,6 +817,8 @@ export async function startHostRoom(opts: HostRoomOptions): Promise<HostRoom> {
 		origin = next;
 		title = nextTitle;
 		film = crypto.randomUUID();
+		filmStartedAt = performance.now();
+		stats.fetchTrace = [];
 		pausedBy = null;
 		cannotPlay.clear();
 		// The tracker's every claim names the old film's bytes.
